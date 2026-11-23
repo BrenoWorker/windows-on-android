@@ -26,6 +26,24 @@ void drawIcon(Gfx& g, IconId id, const Rect& r, Color c, float battery) {
             if (id == IcExplorer) g.rect(R(1, 11.2f, 14, 2.6f), rgb(0x2F8FE0), 1.2f * u);
             break;
         }
+        case IcBrowser:
+        case IcGlyphGlobe: {
+            bool full = id == IcBrowser;
+            Color line = full ? rgb(0xFFFFFF, 0.92f) : c;
+            float rr = full ? 6.6f : 6.2f;
+            if (full) {
+                g.rectV(R(1.4f, 1.4f, 13.2f, 13.2f), rgb(0x45C0FF), rgb(0x0A58C2), 6.6f * u);
+                g.circle(X(5.6f), Y(5.0f), 2.4f * u, rgb(0xFFFFFF, 0.18f));
+            }
+            g.ring(X(8), Y(8), rr * u, 0.9f * u, line);
+            L(8 - rr, 8, 8 + rr, 8, 0.9f, line);
+            L(8, 8 - rr, 8, 8 + rr, 0.9f, line);
+            L(8 - rr * 0.84f, 4.6f, 8 + rr * 0.84f, 4.6f, 0.8f, line);
+            L(8 - rr * 0.84f, 11.4f, 8 + rr * 0.84f, 11.4f, 0.8f, line);
+            g.arc(X(12.6f), Y(8), 6.3f * u, 2.32f, 3.96f, 0.9f * u, line);
+            g.arc(X(3.4f), Y(8), 6.3f * u, -0.82f, 0.82f, 0.9f * u, line);
+            break;
+        }
         case IcFile: {
             g.rect(R(3, 1, 10, 14), rgb(0xBDBDBD), 1.2f * u);
             g.rect(R(3.5f, 1.5f, 9, 13), rgb(0xFFFFFF), 1.0f * u);
@@ -351,6 +369,17 @@ void drawIcon(Gfx& g, IconId id, const Rect& r, Color c, float battery) {
         case IcGlyphGrid:
             for (int yy = 0; yy < 2; yy++)
                 for (int xx = 0; xx < 2; xx++) g.stroke(R(2 + xx * 6.5f, 2 + yy * 6.5f, 5.5f, 5.5f), c, 1.0f * u, t * u);
+            break;
+        case IcGlyphExternal:
+            g.stroke(R(2, 4, 10, 10), c, 1.2f * u, t * u);
+            L(8, 8, 14, 2, t, c);
+            L(9.5f, 2, 14, 2, t, c);
+            L(14, 2, 14, 6.5f, t, c);
+            break;
+        case IcGlyphMonitor:
+            g.stroke(R(1.5f, 2.5f, 13, 8.5f), c, 1.0f * u, t * u);
+            L(8, 11, 8, 13.5f, t, c);
+            L(5, 13.8f, 11, 13.8f, t, c);
             break;
         case IcGlyphHome:
             L(1.6f, 8, 8, 2, t, c);

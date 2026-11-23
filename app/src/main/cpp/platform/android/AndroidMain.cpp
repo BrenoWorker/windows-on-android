@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include "../../shell/Shell.h"
 
@@ -32,6 +33,7 @@ struct Engine {
     int height = 0;
     bool focused = true;
     int primaryPointer = -1;
+    double insetsTime = 0;
     std::unique_ptr<Shell> shell;
 };
 
@@ -119,6 +121,139 @@ float batteryLevel(Engine& e) {
     return level;
 }
 
+class JniWebBridge : public WebBridge {
+public:
+    JniWebBridge(JNIEnv* env, jobject activity) : env_(env), activity_(activity) {
+        jclass cls = env->GetObjectClass(activity);
+        create_ = env->GetMethodID(cls, "webCreate", "()I");
+        destroy_ = env->GetMethodID(cls, "webDestroy", "(I)V");
+        layout_ = env->GetMethodID(cls, "webLayout", "(IIIIIZ)V");
+        load_ = env->GetMethodID(cls, "webLoad", "(I[B)V");
+        action_ = env->GetMethodID(cls, "webAction", "(II)V");
+        text_ = env->GetMethodID(cls, "webText", "(I[B)V");
+        key_ = env->GetMethodID(cls, "webKey", "(II)V");
+        state_ = env->GetMethodID(cls, "webState", "(I)Ljava/lang/String;");
+        snapshot_ = env->GetMethodID(cls, "webSnapshot", "(I)[I");
+        clearException(env);
+        env->DeleteLocalRef(cls);
+    }
+
+    bool valid() const { return create_ && destroy_ && layout_ && load_ && action_ && text_ && key_ && state_ && snapshot_; }
+
+    int create() override {
+        jint id = env_->CallIntMethod(activity_, create_);
+        clearException(env_);
+        return (int)id;
+    }
+    void destroy(int id) override {
+        env_->CallVoidMethod(activity_, destroy_, (jint)id);
+        clearException(env_);
+    }
+    void layout(int id, int x, int y, int w, int h, bool visible) override {
+        env_->CallVoidMethod(activity_, layout_, (jint)id, (jint)x, (jint)y, (jint)w, (jint)h, (jboolean)visible);
+        clearException(env_);
+    }
+    void load(int id, const std::string& url) override { callBytes(load_, id, url); }
+    void text(int id, const std::string& t) override { callBytes(text_, id, t); }
+    void action(int id, int a) override {
+        env_->CallVoidMethod(activity_, action_, (jint)id, (jint)a);
+        clearException(env_);
+    }
+    void key(int id, int k) override {
+        env_->CallVoidMethod(activity_, key_, (jint)id, (jint)k);
+        clearException(env_);
+    }
+    WebState state(int id) override {
+        WebState st;
+        jstring js = (jstring)env_->CallObjectMethod(activity_, state_, (jint)id);
+        clearException(env_);
+        if (!js) return st;
+        const char* c = env_->GetStringUTFChars(js, nullptr);
+        std::string s = c ? c : "";
+        if (c) env_->ReleaseStringUTFChars(js, c);
+        env_->DeleteLocalRef(js);
+        std::vector<std::string> f;
+        size_t p = 0;
+        while (f.size() < 7) {
+            size_t t = s.find('\t', p);
+            if (t == std::string::npos) break;
+            f.push_back(s.substr(p, t - p));
+            p = t + 1;
+        }
+        if (f.size() < 7) return st;
+        f.push_back(s.substr(p));
+        st.progress = atoi(f[0].c_str());
+        st.canBack = f[1] == "1";
+        st.canForward = f[2] == "1";
+        st.loading = f[3] == "1";
+        st.editable = f[4] == "1";
+        st.desktop = f[5] == "1";
+        st.url = f[6];
+        st.title = f[7];
+        return st;
+    }
+    bool snapshot(int id, std::vector<unsigned char>& rgba, int& w, int& h) override {
+        jintArray arr = (jintArray)env_->CallObjectMethod(activity_, snapshot_, (jint)id);
+        clearException(env_);
+        if (!arr) return false;
+        jsize n = env_->GetArrayLength(arr);
+        bool ok = false;
+        if (n > 2) {
+            std::vector<jint> data((size_t)n);
+            env_->GetIntArrayRegion(arr, 0, n, data.data());
+            w = data[0];
+            h = data[1];
+            if (w > 0 && h > 0 && (jsize)(w * h + 2) <= n) {
+                rgba.resize((size_t)w * h * 4);
+                for (size_t i = 0; i < (size_t)w * h; i++) {
+                    uint32_t v = (uint32_t)data[i + 2];
+                    rgba[i * 4 + 0] = (v >> 16) & 255;
+                    rgba[i * 4 + 1] = (v >> 8) & 255;
+                    rgba[i * 4 + 2] = v & 255;
+                    rgba[i * 4 + 3] = 255;
+                }
+                ok = true;
+            }
+        }
+        env_->DeleteLocalRef(arr);
+        return ok;
+    }
+
+private:
+    void callBytes(jmethodID m, int id, const std::string& s) {
+        jbyteArray b = env_->NewByteArray((jsize)s.size());
+        if (!b) {
+            clearException(env_);
+            return;
+        }
+        env_->SetByteArrayRegion(b, 0, (jsize)s.size(), (const jbyte*)s.data());
+        env_->CallVoidMethod(activity_, m, (jint)id, b);
+        clearException(env_);
+        env_->DeleteLocalRef(b);
+    }
+
+    JNIEnv* env_;
+    jobject activity_;
+    jmethodID create_ = nullptr, destroy_ = nullptr, layout_ = nullptr, load_ = nullptr, action_ = nullptr;
+    jmethodID text_ = nullptr, key_ = nullptr, state_ = nullptr, snapshot_ = nullptr;
+};
+
+void updateInsets(Engine& e) {
+    if (!e.env || !e.shell) return;
+    jclass cls = e.env->GetObjectClass(e.app->activity->clazz);
+    jmethodID m = e.env->GetMethodID(cls, "getSafeInsets", "()[I");
+    clearException(e.env);
+    e.env->DeleteLocalRef(cls);
+    if (!m) return;
+    jintArray arr = (jintArray)e.env->CallObjectMethod(e.app->activity->clazz, m);
+    clearException(e.env);
+    if (!arr) return;
+    jint v[4] = {0, 0, 0, 0};
+    if (e.env->GetArrayLength(arr) >= 4) e.env->GetIntArrayRegion(arr, 0, 4, v);
+    e.env->DeleteLocalRef(arr);
+    e.shell->setInsets((float)v[0], (float)v[1], (float)v[2], (float)v[3]);
+}
+
 bool initDisplay(Engine& e) {
     if (e.display == EGL_NO_DISPLAY) {
         e.display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -158,10 +293,15 @@ bool initDisplay(Engine& e) {
         Engine* ep = &e;
         p.quit = [ep]() { ANativeActivity_finish(ep->app->activity); };
         p.batteryLevel = [ep]() { return batteryLevel(*ep); };
+        if (e.env) {
+            auto bridge = std::make_shared<JniWebBridge>(e.env, e.app->activity->clazz);
+            if (bridge->valid()) p.web = bridge;
+        }
         e.shell = std::make_unique<Shell>(p);
         e.shell->init();
     }
     e.shell->resize(e.width, e.height);
+    updateInsets(e);
     return true;
 }
 
@@ -196,6 +336,12 @@ void drawFrame(Engine& e) {
         e.width = w;
         e.height = h;
         e.shell->resize(w, h);
+        updateInsets(e);
+    }
+    double t = nowSeconds();
+    if (t - e.insetsTime > 1.0) {
+        e.insetsTime = t;
+        updateInsets(e);
     }
     e.shell->frame(nowSeconds());
     if (!eglSwapBuffers(e.display, e.surface)) {

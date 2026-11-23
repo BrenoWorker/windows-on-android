@@ -8,6 +8,7 @@
 namespace wd {
 
 std::unique_ptr<AppWindow> makeExplorer(Shell& s, const std::string& arg);
+std::unique_ptr<AppWindow> makeBrowser(Shell& s, const std::string& arg);
 std::unique_ptr<AppWindow> makeNotepad(Shell& s, const std::string& arg);
 std::unique_ptr<AppWindow> makeCalculator(Shell& s);
 std::unique_ptr<AppWindow> makeSettings(Shell& s, const std::string& arg);

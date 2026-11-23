@@ -14,11 +14,13 @@
 - Built-in touch keyboard with symbols and accented characters, plus hardware keyboard support
 - Desktop icons and a context menu (new folder, new text document, rename, delete, personalize)
 - Light and dark themes, 8 accent colors, 5 wallpapers and display scaling, all saved to disk
+- True immersive fullscreen: status and navigation bars hidden (swipe to peek), drawn under the display cutout with safe insets respected
 
 ## Apps
 
 | App | What it does |
 | --- | --- |
+| Browser | Real web browsing with the Chromium engine (Android System WebView): tabs aware of back/forward, address bar with Google search, desktop site mode, typing through the WinDroid keyboard, and an "Open in Chrome" button that launches the page in Google Chrome as a Custom Tab |
 | File Explorer | Browses the app's own `C:` drive, creates, renames and deletes files and folders, Recycle Bin, disk usage |
 | Notepad | Word wrapped text editor with caret, zoom, Save and Save as |
 | Calculator | Standard calculator with the same behavior as the Windows one |
@@ -40,9 +42,13 @@ app/src/main/cpp
   shell/      shell, taskbar, start menu, flyouts, window manager, touch keyboard, icons
   apps/       Explorer, Notepad, Calculator, Settings, Terminal, Paint, Minesweeper, dialogs
   platform/   android_main, EGL, input and JNI glue
+app/src/main/java
+  WinDroidActivity  NativeActivity subclass: immersive mode, cutout insets, WebView host
 ```
 
-Everything is drawn with one shader that renders rounded rectangles, soft shadows, strokes, text and images. Icons are drawn procedurally in code, so the APK has no image assets.
+The browser page is a WebView hosted in a non-focusable popup window that is positioned over the window's client area while it is the active window. When another window, the Start menu or a flyout covers it, the page is captured into a texture and drawn by the GL shell instead, so windows still stack correctly.
+
+Everything else is drawn with one shader that renders rounded rectangles, soft shadows, strokes, text and images. Icons are drawn procedurally in code, so the APK has no image assets.
 
 ## Building
 

@@ -7,6 +7,7 @@ class Gfx;
 
 enum IconId {
     IcExplorer,
+    IcBrowser,
     IcNotepad,
     IcCalculator,
     IcSettings,
@@ -60,6 +61,9 @@ enum IconId {
     IcGlyphFlag,
     IcGlyphGrid,
     IcGlyphHome,
+    IcGlyphExternal,
+    IcGlyphMonitor,
+    IcGlyphGlobe,
 };
 
 void drawIcon(Gfx& g, IconId id, const Rect& r, Color glyph, float battery = 1.0f);

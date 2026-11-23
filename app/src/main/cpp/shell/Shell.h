@@ -14,7 +14,7 @@
 
 namespace wd {
 
-enum class AppKind { Explorer, Notepad, Calculator, Settings, Terminal, Paint, Minesweeper, Dialog };
+enum class AppKind { Explorer, Browser, Notepad, Calculator, Settings, Terminal, Paint, Minesweeper, Dialog };
 
 struct AppInfo {
     AppKind kind;
@@ -25,6 +25,33 @@ struct AppInfo {
 
 const std::vector<AppInfo>& appCatalog();
 const AppInfo& appInfo(AppKind k);
+
+struct WebState {
+    int progress = 100;
+    bool canBack = false;
+    bool canForward = false;
+    bool loading = false;
+    bool editable = false;
+    bool desktop = false;
+    std::string url;
+    std::string title;
+};
+
+class WebBridge {
+public:
+    virtual ~WebBridge() = default;
+    virtual int create() = 0;
+    virtual void destroy(int id) = 0;
+    virtual void layout(int id, int x, int y, int w, int h, bool visible) = 0;
+    virtual void load(int id, const std::string& url) = 0;
+    virtual void action(int id, int action) = 0;
+    virtual void text(int id, const std::string& text) = 0;
+    virtual void key(int id, int key) = 0;
+    virtual WebState state(int id) = 0;
+    virtual bool snapshot(int id, std::vector<unsigned char>& rgba, int& w, int& h) = 0;
+};
+
+enum WebAction { WebBack = 0, WebForward, WebReload, WebStop, WebOpenInChrome, WebToggleDesktop };
 
 struct Platform {
     std::string dataDir;
@@ -37,6 +64,7 @@ struct Platform {
     std::string abi = "arm64-v8a";
     std::function<void()> quit;
     std::function<float()> batteryLevel;
+    std::shared_ptr<WebBridge> web;
 };
 
 struct Config {
@@ -57,6 +85,7 @@ public:
     virtual void draw(Ui& ui, const Rect& client) = 0;
     virtual bool wantsText() const { return false; }
     virtual bool onBack() { return false; }
+    virtual void hidden() {}
 
     Shell* shell = nullptr;
     AppKind kind = AppKind::Notepad;
@@ -75,6 +104,8 @@ public:
     float prefW = 640;
     float prefH = 440;
     bool resizable = true;
+    bool exclusive = false;
+    bool drawn = false;
 };
 
 class Shell {
@@ -126,6 +157,7 @@ public:
     std::string timeString() const;
     std::string dateString() const;
     void drawWallpaper(const Rect& r, int index = -1);
+    void setInsets(float l, float t, float r, float b);
     void setNightLight(bool v) { night_ = v; }
     bool nightLight() const { return night_; }
 
@@ -202,6 +234,8 @@ private:
     int fsVersion_ = 1;
     int deskVersion_ = 0;
     bool started_ = false;
+    bool deskInteractive_ = false;
+    float insL_ = 0, insT_ = 0, insR_ = 0, insB_ = 0;
     std::deque<Ev> queue_;
     std::vector<std::unique_ptr<AppWindow>> windows_;
     AppWindow* focused_ = nullptr;

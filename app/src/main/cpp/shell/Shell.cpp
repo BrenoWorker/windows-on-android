@@ -17,6 +17,7 @@ static const uint32_t kAccents[] = {0x0078D4, 0x8764B8, 0x107C10, 0xCA5010, 0xE3
 const std::vector<AppInfo>& appCatalog() {
     static const std::vector<AppInfo> apps = {
         {AppKind::Explorer, "File Explorer", IcExplorer, true},
+        {AppKind::Browser, "Browser", IcBrowser, true},
         {AppKind::Notepad, "Notepad", IcNotepad, true},
         {AppKind::Calculator, "Calculator", IcCalculator, true},
         {AppKind::Settings, "Settings", IcSettings, true},
@@ -194,7 +195,15 @@ void Shell::recycle(const std::string& path) {
 Rect Shell::workArea() const {
     float W = gfx_.width(), H = gfx_.height();
     float kh = kbOpen_ ? keyboardHeight() : 0;
-    return {0, 0, W, H - kTaskbarH - kh};
+    return {insL_, insT_, W - insL_ - insR_, H - kTaskbarH - kh - insT_};
+}
+
+void Shell::setInsets(float l, float t, float r, float b) {
+    float s = gfx_.scale();
+    insL_ = l / s;
+    insT_ = t / s;
+    insR_ = r / s;
+    insB_ = b / s;
 }
 
 float Shell::keyboardHeight() const { return std::min(gfx_.height() * 0.44f, 290.0f); }
@@ -209,20 +218,20 @@ Rect Shell::taskbarRect() const { return {0, gfx_.height() - kTaskbarH, gfx_.wid
 Rect Shell::startRect() const {
     float W = gfx_.width(), H = gfx_.height();
     float w = std::min(620.f, W - 16), h = std::min(660.f, H - kTaskbarH - 24);
-    float x = cfg_.taskbarLeft ? 12 : (W - w) * 0.5f;
+    float x = cfg_.taskbarLeft ? 12 + insL_ : (W - w) * 0.5f;
     return {x, H - kTaskbarH - 12 - h, w, h};
 }
 
 Rect Shell::quickRect() const {
     float W = gfx_.width(), H = gfx_.height();
     float w = std::min(360.f, W - 16), h = std::min(318.f, H - kTaskbarH - 24);
-    return {W - w - 12, H - kTaskbarH - 12 - h, w, h};
+    return {W - w - 12 - insR_, H - kTaskbarH - 12 - h, w, h};
 }
 
 Rect Shell::calendarRect() const {
     float W = gfx_.width(), H = gfx_.height();
     float w = std::min(336.f, W - 16), h = std::min(372.f, H - kTaskbarH - 24);
-    return {W - w - 12, H - kTaskbarH - 12 - h, w, h};
+    return {W - w - 12 - insR_, H - kTaskbarH - 12 - h, w, h};
 }
 
 Rect Shell::contextRect() const {
@@ -302,6 +311,7 @@ AppWindow* Shell::open(AppKind k, const std::string& arg) {
     std::unique_ptr<AppWindow> w;
     switch (k) {
         case AppKind::Explorer: w = makeExplorer(*this, arg); break;
+        case AppKind::Browser: w = makeBrowser(*this, arg); break;
         case AppKind::Notepad: w = makeNotepad(*this, arg); break;
         case AppKind::Calculator: w = makeCalculator(*this); break;
         case AppKind::Settings: w = makeSettings(*this, arg); break;
@@ -620,6 +630,7 @@ void Shell::frame(double t) {
         }
     }
 
+    for (auto& w : windows_) w->drawn = false;
     gfx_.begin({0, 0, 0, 1});
     switch (state_) {
         case State::Boot: drawBoot(); break;
@@ -632,6 +643,11 @@ void Shell::frame(double t) {
     if (brightness_ < 1) gfx_.rect(full, rgb(0x000000, (1 - brightness_) * 0.7f));
     gfx_.end();
 
+    for (auto& w : windows_)
+        if (!w->drawn) {
+            w->exclusive = false;
+            w->hidden();
+        }
     if (ui_.released) {
         cap_ = Owner::None;
         capWin_ = nullptr;
@@ -784,6 +800,7 @@ void Shell::refreshDesktop() {
 
 void Shell::drawDesktop(bool interactive) {
     float W = gfx_.width(), H = gfx_.height();
+    deskInteractive_ = interactive && state_ == State::Desktop;
     drawWallpaper({0, 0, W, H});
     drawDesktopIcons(interactive && cap_ == Owner::Desktop);
     std::vector<AppWindow*> order;
@@ -821,13 +838,13 @@ void Shell::drawDesktopIcons(bool cap) {
     refreshDesktop();
     Rect wa = workArea();
     float cw = 80, ch = 86;
-    float x = 6, y = 6;
+    float x = 6 + wa.x, y = 6 + wa.y;
     bool anyHit = false;
     Ui& ui = ui_;
     ui.active = cap;
     for (size_t i = 0; i < desk_.size(); i++) {
         if (y + ch > wa.b()) {
-            y = 6;
+            y = 6 + wa.y;
             x += cw + 4;
         }
         Rect cell{x, y, cw, ch};
@@ -912,6 +929,7 @@ void Shell::drawDesktopIcons(bool cap) {
 }
 
 void Shell::drawWindow(AppWindow* w, bool cap) {
+    w->exclusive = false;
     float target = (w->closing || w->minimizing) ? 0.f : 1.f;
     w->anim = approach(w->anim, target, ui_.dt / 0.16f);
     if (w->minimizing && w->anim <= 0) {
@@ -1005,6 +1023,11 @@ void Shell::drawWindow(AppWindow* w, bool cap) {
     if (ui.clicked(bMin)) minimize(w);
 
     Rect client{f.x, f.y + kTitleH, f.w, f.h - kTitleH};
+    bool manipulating = interactive && ui.down && (capPart_ == Part::Title || capPart_ == Part::Resize);
+    w->exclusive = deskInteractive_ && w == focused_ && w->anim >= 1 && !w->closing && !manipulating && !startOpen_ &&
+                   !quickOpen_ && !calOpen_ && !ctxOpen_ && startAnim_ <= 0 && quickAnim_ <= 0 && calAnim_ <= 0 &&
+                   topVisible(windows_, nullptr) == w;
+    w->drawn = true;
     gfx_.pushClip(client);
     ui.active = interactive && capPart_ == Part::Client;
     ui.focus = foc && !startOpen_;
@@ -1061,7 +1084,7 @@ void Shell::drawTaskbar(bool cap) {
         if (!a.pinned && !windowsOf(a.kind).empty()) items.push_back({2, a.kind, a.icon});
     float slot = 44;
     float total = items.size() * slot - 4;
-    float x0 = cfg_.taskbarLeft ? 10 : (tb.w - total) * 0.5f;
+    float x0 = cfg_.taskbarLeft ? 10 + insL_ : (tb.w - total) * 0.5f;
     for (size_t i = 0; i < items.size(); i++) {
         Item& it = items[i];
         Rect r{x0 + i * slot, tb.y + 4, 40, 40};
@@ -1121,8 +1144,8 @@ void Shell::drawTaskbar(bool cap) {
         }
     }
 
-    float rx = tb.r() - 10;
-    Rect peek{tb.r() - 8, tb.y, 8, tb.h};
+    float rx = tb.r() - 10 - insR_;
+    Rect peek{tb.r() - 8 - insR_, tb.y, 8 + insR_, tb.h};
     gfx_.rect({peek.x, tb.y + 14, 1, tb.h - 28}, alpha(theme_.text, 0.2f));
     if (ui.clicked(peek)) {
         bool anyOpen = false;
