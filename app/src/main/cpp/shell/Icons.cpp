@@ -144,14 +144,13 @@ void drawIcon(Gfx& g, IconId id, const Rect& r, Color c, float battery) {
             break;
         }
         case IcLogo: {
-            Color a = rgb(0x6CCBFF), b = rgb(0x0A64C8);
-            float s = 2.45f;
-            float cx = X(8), cy = Y(8);
-            float d = 3.6f * u;
-            g.rotRect(cx, cy - d, s * u, s * u, kPi / 4, 0.7f * u, a, mix(a, b, 0.5f));
-            g.rotRect(cx - d, cy, s * u, s * u, kPi / 4, 0.7f * u, mix(a, b, 0.25f), mix(a, b, 0.75f));
-            g.rotRect(cx + d, cy, s * u, s * u, kPi / 4, 0.7f * u, mix(a, b, 0.25f), mix(a, b, 0.75f));
-            g.rotRect(cx, cy + d, s * u, s * u, kPi / 4, 0.7f * u, mix(a, b, 0.5f), b);
+            Rect outer = R(1.2f, 1.8f, 13.6f, 12.4f);
+            g.shadow({outer.x, outer.y + 0.6f * u, outer.w, outer.h}, 2.4f * u, 1.2f * u, rgb(0x000000, 0.18f));
+            g.rectV(outer, rgb(0x5FC3FF), rgb(0x0A5FC6), 2.4f * u);
+            Rect inner = R(2.6f, 5.0f, 10.8f, 7.8f);
+            g.rectV(inner, rgb(0xFFFFFF, 0.95f), rgb(0xDCEEFF, 0.92f), 1.3f * u);
+            g.rect(R(3.2f, 2.9f, 3.4f, 1.0f), rgb(0xFFFFFF, 0.75f), 0.5f * u);
+            g.circle(X(12.2f), Y(3.4f), 0.6f * u, rgb(0xFFFFFF, 0.8f));
             break;
         }
         case IcUser: {
