@@ -10,7 +10,6 @@
 namespace wd {
 
 static const float kTaskbarH = 48;
-static const float kTitleH = 32;
 static const float kPi = 3.14159265f;
 static const uint32_t kAccents[] = {0x0078D4, 0x8764B8, 0x107C10, 0xCA5010, 0xE3008C, 0x038387, 0xC30052, 0x6B69D6};
 
@@ -66,7 +65,7 @@ void Shell::resize(int pw, int ph) {
         if (w->frame.w > wa.w) w->frame.w = wa.w;
         if (w->frame.h > wa.h) w->frame.h = wa.h;
         w->frame.x = clampf(w->frame.x, wa.x - w->frame.w + 80, wa.r() - 80);
-        w->frame.y = clampf(w->frame.y, wa.y, wa.b() - kTitleH);
+        w->frame.y = clampf(w->frame.y, wa.y, wa.b() - w->titleH);
     }
 }
 
@@ -255,7 +254,15 @@ void Shell::hardwareKeyInput() {
 }
 
 bool Shell::back() {
-    if (state_ == State::Lock) return true;
+    if (state_ == State::SignIn) {
+        state_ = State::Lock;
+        stateT_ = time_ - 1;
+        lockOffset_ = 0;
+        unlocking_ = false;
+        signPower_ = false;
+        return true;
+    }
+    if (state_ != State::Desktop) return true;
     if (kbOpen_) {
         kbOpen_ = false;
         return true;
@@ -444,7 +451,7 @@ void Shell::restart() {
     closeFlyouts();
     ctxOpen_ = false;
     kbOpen_ = false;
-    state_ = State::Boot;
+    state_ = State::Restarting;
     stateT_ = time_;
 }
 
@@ -461,6 +468,7 @@ void Shell::lock() {
     ctxOpen_ = false;
     kbOpen_ = false;
     state_ = State::Lock;
+    stateT_ = time_;
     lockOffset_ = 0;
     unlocking_ = false;
 }
@@ -609,11 +617,14 @@ void Shell::frame(double t) {
         if (cap_ == Owner::Window && w) {
             focus(w);
             Rect f = w->frame;
-            Rect btns{f.r() - 138, f.y, 138, kTitleH};
-            Rect title{f.x, f.y, f.w, kTitleH};
+            Rect btns{f.r() - 138, f.y, 138, w->titleH};
+            Rect title{f.x, f.y, f.w, w->titleH};
             Rect corner{f.r() - 22, f.b() - 22, 22, 22};
             if (btns.contains(ui_.x, ui_.y))
                 capPart_ = Part::Buttons;
+            else if (w->customTitle() && title.contains(ui_.x, ui_.y) &&
+                     w->titleHit({f.x, f.y, f.w - 138, w->titleH}, ui_.x, ui_.y))
+                capPart_ = Part::TitleApp;
             else if (title.contains(ui_.x, ui_.y))
                 capPart_ = Part::Title;
             else if (w->resizable && !w->maximized && corner.contains(ui_.x, ui_.y))
@@ -635,7 +646,14 @@ void Shell::frame(double t) {
     switch (state_) {
         case State::Boot: drawBoot(); break;
         case State::Lock: drawLock(); break;
-        case State::Desktop: drawDesktop(true); break;
+        case State::SignIn: drawSignIn(true, false); break;
+        case State::Welcome: drawSignIn(false, true); break;
+        case State::Desktop:
+            drawDesktop(true);
+            deskFade_ = approach(deskFade_, 1.f, ui_.dt / 0.45f);
+            if (deskFade_ < 1) gfx_.rect({0, 0, gfx_.width(), gfx_.height()}, rgb(0x000000, 1 - easeOut(deskFade_)));
+            break;
+        case State::Restarting: drawRestarting(); break;
         case State::Shutdown: drawShutdown(); break;
     }
     Rect full{0, 0, gfx_.width(), gfx_.height()};
@@ -678,12 +696,18 @@ void Shell::drawBoot() {
     float W = gfx_.width(), H = gfx_.height();
     double e = time_ - stateT_;
     gfx_.rect({0, 0, W, H}, rgb(0x000000));
-    float a = clampf((float)e / 0.4f, 0, 1);
-    gfx_.pushLayer(W / 2, H * 0.4f, 1, a);
-    drawIcon(gfx_, IcLogo, {W / 2 - 50, H * 0.4f - 50, 100, 100}, {1, 1, 1, 1});
+    float a = clampf((float)(e - 0.25) / 0.6f, 0, 1);
+    float out = clampf((float)(e - 2.9) / 0.35f, 0, 1);
+    float ls = std::min(W, H) * 0.24f;
+    gfx_.pushLayer(W / 2, H * 0.42f, 0.96f + 0.04f * easeOut(a), easeOut(a) * (1 - out));
+    drawIcon(gfx_, IcLogo, {W / 2 - ls / 2, H * 0.42f - ls / 2, ls, ls}, {1, 1, 1, 1});
     gfx_.popLayer();
-    if (e > 0.5) drawSpinner(W / 2, H * 0.74f, 15, rgb(0xFFFFFF));
-    if (e > 2.4) {
+    if (e > 0.9 && out < 1) {
+        gfx_.pushLayer(W / 2, H * 0.78f, 1, clampf((float)(e - 0.9) / 0.3f, 0, 1) * (1 - out));
+        drawSpinner(W / 2, H * 0.78f, 14, rgb(0xFFFFFF));
+        gfx_.popLayer();
+    }
+    if (e > 3.3) {
         state_ = State::Lock;
         lockOffset_ = 0;
         unlocking_ = false;
@@ -691,12 +715,31 @@ void Shell::drawBoot() {
     }
 }
 
+void Shell::drawRestarting() {
+    float W = gfx_.width(), H = gfx_.height();
+    double e = time_ - stateT_;
+    gfx_.rect({0, 0, W, H}, rgb(0x0B1F33));
+    float a = clampf((float)e / 0.3f, 0, 1) * (1 - clampf((float)(e - 1.9) / 0.3f, 0, 1));
+    gfx_.pushLayer(W / 2, H / 2, 1, a);
+    float tw = gfx_.textWidth(22, "Restarting");
+    float x = W / 2 - (tw + 46) / 2;
+    drawSpinner(x + 14, H / 2, 12, rgb(0xFFFFFF));
+    gfx_.textIn({x + 46, H / 2 - 18, tw + 4, 36}, 22, "Restarting", rgb(0xFFFFFF));
+    gfx_.popLayer();
+    if (e > 2.3) {
+        state_ = State::Boot;
+        stateT_ = time_;
+    }
+}
+
 void Shell::drawShutdown() {
     float W = gfx_.width(), H = gfx_.height();
     double e = time_ - stateT_;
-    gfx_.rect({0, 0, W, H}, rgb(0x0A2A4A));
-    drawSpinner(W / 2 - 70, H / 2, 12, rgb(0xFFFFFF));
-    gfx_.text(W / 2 - 40, H / 2 - 12, 20, "Shutting down", rgb(0xFFFFFF));
+    gfx_.rect({0, 0, W, H}, rgb(0x0B1F33));
+    float tw = gfx_.textWidth(22, "Shutting down");
+    float x = W / 2 - (tw + 46) / 2;
+    drawSpinner(x + 14, H / 2, 12, rgb(0xFFFFFF));
+    gfx_.textIn({x + 46, H / 2 - 18, tw + 4, 36}, 22, "Shutting down", rgb(0xFFFFFF));
     if (e > 1.8) {
         gfx_.rect({0, 0, W, H}, rgb(0x000000));
         if (plat_.quit) plat_.quit();
@@ -739,7 +782,7 @@ void Shell::drawWallpaper(const Rect& r, int index) {
 
 void Shell::drawLock() {
     float W = gfx_.width(), H = gfx_.height();
-    drawDesktop(false);
+    drawSignIn(false, false);
     Ui& ui = ui_;
     ui.active = true;
     Rect full{0, 0, W, H};
@@ -751,36 +794,132 @@ void Shell::drawLock() {
             else
                 lockOffset_ = 0;
         }
-        for (int k : ui.keys)
-            if (k == KeyEnter) unlocking_ = true;
-        if (!ui.chars.empty()) unlocking_ = true;
-    }
-    if (unlocking_) {
-        lockOffset_ -= ui.dt * H * 4.5f;
+        if (!ui.keys.empty() || !ui.chars.empty()) unlocking_ = true;
+    } else {
+        lockOffset_ -= ui.dt * H * 4.0f;
         if (lockOffset_ <= -H) {
-            state_ = State::Desktop;
+            state_ = State::SignIn;
+            stateT_ = time_;
             unlocking_ = false;
             lockOffset_ = 0;
+            signPower_ = false;
             ui.active = false;
             return;
         }
     }
-    float fade = 1 + lockOffset_ / H;
-    gfx_.pushLayer(0, 0, 1, clampf(fade * 1.4f, 0, 1), 0, lockOffset_);
+    gfx_.pushLayer(0, 0, 1, 1, 0, lockOffset_);
     drawWallpaper(full);
-    gfx_.rect(full, rgb(0x000000, 0.18f));
-    gfx_.textIn({0, H * 0.12f, W, 90}, 84, timeString(), rgb(0xFFFFFF), AlignCenter);
+    gfx_.rectV({0, 0, W, H * 0.5f}, rgb(0x000000, 0.28f), rgb(0x000000, 0.0f));
+    gfx_.rect(full, rgb(0x000000, 0.08f));
+    float big = std::min(110.f, H * 0.2f);
+    std::string ts = timeString();
+    float tw = gfx_.textWidth(big, ts);
+    gfx_.textBold(W / 2 - tw / 2, H * 0.08f, big, ts, rgb(0xFFFFFF));
     time_t tt = time(nullptr);
     struct tm lt;
     localtime_r(&tt, &lt);
     char buf[64];
     strftime(buf, sizeof buf, "%A, %B %d", &lt);
-    gfx_.textIn({0, H * 0.12f + 92, W, 30}, 20, buf, rgb(0xFFFFFF), AlignCenter);
-    float pulse = 0.55f + 0.45f * (float)std::sin(time_ * 3.0);
-    gfx_.textIn({0, H - 54, W, 24}, 13, "Swipe up or tap to unlock", rgb(0xFFFFFF, pulse), AlignCenter);
-    drawIcon(gfx_, IcGlyphWifi, {W - 70, H - 40, 18, 18}, rgb(0xFFFFFF));
-    drawIcon(gfx_, IcGlyphBattery, {W - 44, H - 40, 20, 18}, rgb(0xFFFFFF), battery_);
+    gfx_.textIn({0, H * 0.08f + big * 1.12f, W, 30}, 20, buf, rgb(0xFFFFFF), AlignCenter);
+
+    Rect card{24 + insL_, H - 92, 220, 64};
+    gfx_.rect(card, rgb(0x000000, 0.28f), 8);
+    drawIcon(gfx_, IcGlyphBattery, {card.x + 16, card.cy() - 10, 26, 20}, rgb(0xFFFFFF), battery_);
+    gfx_.textBold(card.x + 56, card.y + 12, 15, std::to_string((int)std::lround(battery_ * 100)) + "%", rgb(0xFFFFFF));
+    gfx_.text(card.x + 56, card.y + 34, 11.5f, wifi_ ? "Wi-Fi connected" : "Not connected", rgb(0xFFFFFF, 0.8f));
+
+    float bob = (float)std::sin(time_ * 2.6) * 3;
+    gfx_.line(W / 2 - 9, H - 28 + bob, W / 2, H - 36 + bob, 1.6f, rgb(0xFFFFFF, 0.8f));
+    gfx_.line(W / 2, H - 36 + bob, W / 2 + 9, H - 28 + bob, 1.6f, rgb(0xFFFFFF, 0.8f));
+    drawIcon(gfx_, IcGlyphWifi, {W - 76 - insR_, H - 42, 18, 18}, rgb(0xFFFFFF));
+    drawIcon(gfx_, IcGlyphBattery, {W - 48 - insR_, H - 42, 22, 18}, rgb(0xFFFFFF), battery_);
     gfx_.popLayer();
+    float fadeIn = clampf((float)(time_ - stateT_) / 0.5f, 0, 1);
+    if (fadeIn < 1) gfx_.rect(full, rgb(0x000000, 1 - fadeIn));
+    ui.active = false;
+}
+
+void Shell::drawSignIn(bool interactive, bool welcome) {
+    float W = gfx_.width(), H = gfx_.height();
+    Rect full{0, 0, W, H};
+    Ui& ui = ui_;
+    drawWallpaper(full);
+    gfx_.rectV(full, rgb(cfg_.dark ? 0x0E1622 : 0x2A4562, 0.82f), rgb(cfg_.dark ? 0x05080E : 0x162638, 0.88f));
+    gfx_.shadow({W * 0.25f, H * 0.12f, W * 0.5f, H * 0.55f}, H * 0.3f, H * 0.4f, rgb(0x6FA8E8, 0.10f));
+    float r = std::min(H * 0.17f, 86.f);
+    float cy = H * 0.36f;
+    float appear = welcome ? 1.f : easeOut(clampf((float)(time_ - stateT_) / 0.35f, 0, 1));
+    gfx_.pushLayer(W / 2, cy, 0.94f + 0.06f * appear, appear);
+    drawIcon(gfx_, IcUser, {W / 2 - r, cy - r, r * 2, r * 2}, rgb(0xFFFFFF));
+    float ny = cy + r + 14;
+    float nw = gfx_.textWidth(26, cfg_.user);
+    gfx_.textBold(W / 2 - nw / 2, ny, 26, cfg_.user, rgb(0xFFFFFF));
+    ui.active = interactive;
+    if (welcome) {
+        float tw = gfx_.textWidth(18, "Welcome");
+        float x = W / 2 - (tw + 40) / 2;
+        drawSpinner(x + 12, ny + 64, 10, rgb(0xFFFFFF));
+        gfx_.textIn({x + 40, ny + 50, tw + 4, 28}, 18, "Welcome", rgb(0xFFFFFF));
+        if (time_ - stateT_ > 1.3) {
+            state_ = State::Desktop;
+            stateT_ = time_;
+            deskFade_ = 0;
+        }
+    } else {
+        Rect btn{W / 2 - 110, ny + 52, 220, 38};
+        Color bg = ui.held(btn) ? rgb(0xFFFFFF, 0.32f) : rgb(0xFFFFFF, 0.2f);
+        gfx_.rect(btn, bg, 5);
+        gfx_.stroke(btn, rgb(0xFFFFFF, 0.3f), 5, 1);
+        gfx_.textIn(btn, 14, "Sign in", rgb(0xFFFFFF), AlignCenter);
+        bool go = ui.clicked(btn);
+        if (interactive)
+            for (int k : ui.keys)
+                if (k == KeyEnter) go = true;
+        if (go) {
+            state_ = State::Welcome;
+            stateT_ = time_;
+            signPower_ = false;
+        }
+    }
+    gfx_.popLayer();
+
+    Rect tile{20 + insL_, H - 64, 200, 48};
+    gfx_.rect(tile, rgb(0xFFFFFF, 0.12f), 5);
+    drawIcon(gfx_, IcUser, {tile.x + 8, tile.y + 8, 32, 32}, rgb(0xFFFFFF));
+    gfx_.textIn({tile.x + 50, tile.y, tile.w - 56, tile.h}, 13, cfg_.user, rgb(0xFFFFFF));
+
+    Rect wifiR{W - 112 - insR_, H - 56, 40, 40};
+    Rect pwr{W - 64 - insR_, H - 56, 40, 40};
+    drawIcon(gfx_, IcGlyphWifi, wifiR.centered(20, 20), rgb(0xFFFFFF));
+    if (ui.held(pwr) || signPower_) gfx_.rect(pwr, rgb(0xFFFFFF, 0.18f), 5);
+    drawIcon(gfx_, IcGlyphPower, pwr.centered(20, 20), rgb(0xFFFFFF));
+    if (interactive && !welcome) {
+        if (ui.clicked(pwr)) signPower_ = !signPower_;
+        if (signPower_) {
+            Rect m{pwr.r() - 170, pwr.y - 8 - 2 * 38 - 8, 170, 2 * 38 + 8};
+            gfx_.shadow(m, 8, 16, rgb(0x000000, 0.5f));
+            gfx_.rect(m, rgb(0x2C2C2C, 0.97f), 8);
+            const char* labels[] = {"Shut down", "Restart"};
+            IconId icons[] = {IcGlyphPower, IcGlyphRestart};
+            for (int i = 0; i < 2; i++) {
+                Rect ir{m.x + 4, m.y + 4 + i * 38, m.w - 8, 36};
+                if (ui.held(ir)) gfx_.rect(ir, rgb(0xFFFFFF, 0.1f), 4);
+                drawIcon(gfx_, icons[i], {ir.x + 12, ir.cy() - 8, 16, 16}, rgb(0xFFFFFF));
+                gfx_.textIn({ir.x + 40, ir.y, ir.w - 40, ir.h}, 13, labels[i], rgb(0xFFFFFF));
+                if (ui.clicked(ir)) {
+                    signPower_ = false;
+                    if (i == 0) shutdown();
+                    if (i == 1) restart();
+                }
+            }
+        }
+        if (time_ - stateT_ > 30 && !ui.down) {
+            state_ = State::Lock;
+            stateT_ = time_ - 1;
+            lockOffset_ = 0;
+            unlocking_ = false;
+        }
+    }
     ui.active = false;
 }
 
@@ -951,10 +1090,10 @@ void Shell::drawWindow(AppWindow* w, bool cap) {
             w->frame.w = w->restore.w;
             w->frame.h = w->restore.h;
             grabX_ = rel * w->frame.w;
-            grabY_ = std::min(grabY_, kTitleH * 0.5f);
+            grabY_ = std::min(grabY_, w->titleH * 0.5f);
         }
         w->frame.x = ui.x - grabX_;
-        w->frame.y = clampf(ui.y - grabY_, wa.y, wa.b() - kTitleH);
+        w->frame.y = clampf(ui.y - grabY_, wa.y, wa.b() - w->titleH);
     }
     if (interactive && capPart_ == Part::Title && ui.released) {
         if (ui.dragged && w->resizable) {
@@ -991,20 +1130,31 @@ void Shell::drawWindow(AppWindow* w, bool cap) {
     if (!w->maximized)
         gfx_.shadow({f.x, f.y + (foc ? 10.f : 5.f), f.w, f.h}, rad, foc ? 26.f : 14.f,
                     alpha(theme_.shadow, foc ? 1.0f : 0.55f));
-    Color titleBg = foc ? theme_.mica : (theme_.dark ? rgb(0x272727) : rgb(0xF9F9F9));
+    float th = w->titleH;
+    Color titleBg = w->customTitle() ? w->titleColor(theme_, foc)
+                                     : (foc ? theme_.mica : (theme_.dark ? rgb(0x272727) : rgb(0xF9F9F9)));
     gfx_.rect(f, titleBg, rad);
 
-    drawIcon(gfx_, w->icon, {f.x + 12, f.y + 8, 16, 16}, theme_.text);
     Color tc = foc ? theme_.text : theme_.textDim;
-    gfx_.textIn({f.x + 38, f.y, f.w - 38 - 140, kTitleH}, 12, gfx_.ellipsize(12, w->title, f.w - 190), tc);
+    if (w->darkChrome) tc = foc ? rgb(0xFFFFFF) : rgb(0xA0A0A0);
+    if (w->customTitle()) {
+        ui.active = interactive && capPart_ == Part::TitleApp;
+        gfx_.pushClip({f.x, f.y, f.w - 138, th});
+        w->drawTitle(ui, {f.x, f.y, f.w - 138, th}, foc);
+        gfx_.popClip();
+    } else {
+        drawIcon(gfx_, w->icon, {f.x + 12, f.y + th / 2 - 8, 16, 16}, theme_.text);
+        gfx_.textIn({f.x + 38, f.y, f.w - 38 - 140, th}, 12, gfx_.ellipsize(12, w->title, f.w - 190), tc);
+    }
 
     ui.active = interactive && capPart_ == Part::Buttons;
-    Rect bClose{f.r() - 46, f.y, 46, kTitleH};
-    Rect bMax{f.r() - 92, f.y, 46, kTitleH};
-    Rect bMin{f.r() - 138, f.y, 46, kTitleH};
-    if (ui.held(bClose)) gfx_.rect(bClose, rgb(0xC42B1C), rad > 0 ? 0 : 0);
-    if (ui.held(bMax)) gfx_.rect(bMax, theme_.press);
-    if (ui.held(bMin)) gfx_.rect(bMin, theme_.press);
+    Rect bClose{f.r() - 46, f.y, 46, th};
+    Rect bMax{f.r() - 92, f.y, 46, th};
+    Rect bMin{f.r() - 138, f.y, 46, th};
+    Color pressC = w->darkChrome ? rgb(0xFFFFFF, 0.1f) : theme_.press;
+    if (ui.held(bClose)) gfx_.rect(bClose, rgb(0xC42B1C));
+    if (ui.held(bMax)) gfx_.rect(bMax, pressC);
+    if (ui.held(bMin)) gfx_.rect(bMin, pressC);
     Color gc = ui.held(bClose) ? rgb(0xFFFFFF) : tc;
     gfx_.line(bClose.cx() - 5, bClose.cy() - 5, bClose.cx() + 5, bClose.cy() + 5, 1.1f, gc);
     gfx_.line(bClose.cx() + 5, bClose.cy() - 5, bClose.cx() - 5, bClose.cy() + 5, 1.1f, gc);
@@ -1022,8 +1172,8 @@ void Shell::drawWindow(AppWindow* w, bool cap) {
     if (ui.clicked(bMax) && w->resizable) toggleMaximize(w);
     if (ui.clicked(bMin)) minimize(w);
 
-    Rect client{f.x, f.y + kTitleH, f.w, f.h - kTitleH};
-    bool manipulating = interactive && ui.down && (capPart_ == Part::Title || capPart_ == Part::Resize);
+    Rect client{f.x, f.y + th, f.w, f.h - th};
+    bool manipulating = cap && ui_.down && capPart_ == Part::Resize;
     w->exclusive = deskInteractive_ && w == focused_ && w->anim >= 1 && !w->closing && !manipulating && !startOpen_ &&
                    !quickOpen_ && !calOpen_ && !ctxOpen_ && startAnim_ <= 0 && quickAnim_ <= 0 && calAnim_ <= 0 &&
                    topVisible(windows_, nullptr) == w;

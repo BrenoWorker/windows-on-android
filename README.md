@@ -6,7 +6,8 @@
 
 ## Features
 
-- Boot screen, lock screen (swipe up or tap), sleep, restart and shut down
+- Boot screen, lock screen with clock and status card, sign-in screen with a Welcome transition, restart and shut down screens
+- High refresh rate (90/120 Hz) on supported displays and pixel aligned text
 - Centered taskbar (or left aligned) with running indicators, clock, tray and show desktop
 - Start menu with pinned apps, all apps, recommended files and search
 - Real window manager: drag, resize, minimize, maximize, double tap to maximize, snap to the top or sides, open and close animations
@@ -20,12 +21,12 @@
 
 | App | What it does |
 | --- | --- |
-| Browser | Real web browsing with the Chromium engine (Android System WebView): tabs aware of back/forward, address bar with Google search, desktop site mode, typing through the WinDroid keyboard, and an "Open in Chrome" button that launches the page in Google Chrome as a Custom Tab |
+| Browser | Real web browsing with the Chromium engine (Android System WebView): tabs aware of back/forward, address bar with Google search, desktop site mode, typing through the WinDroid keyboard, and an "Open in Chrome" button that launches the page in Google Chrome as a Custom Tab. A WebView is prewarmed at startup and the page stays alive while covered |
 | File Explorer | Browses the app's own `C:` drive, creates, renames and deletes files and folders, Recycle Bin, disk usage |
 | Notepad | Word wrapped text editor with caret, zoom, Save and Save as |
 | Calculator | Standard calculator with the same behavior as the Windows one |
 | Settings | System, Personalization, Accounts, Time & language and About (real device specs and GPU) |
-| Terminal | Command Prompt with `dir`, `cd`, `mkdir`, `type`, `del`, `ren`, `copy`, `tree`, `systeminfo`, `start` and more |
+| Terminal | Windows Terminal style app with tabs in the title bar, PowerShell and Command Prompt profiles, Campbell colors, syntax highlighting, history and commands like `ls`, `cd`, `Get-Content`, `New-Item`, `Remove-Item`, `tree`, `systeminfo`, `start` |
 | Paint | Brush, eraser, bucket fill, 12 colors, undo, saves and opens `.bmp` files |
 | Minesweeper | Classic 9x9 game, long press or flag mode to place flags |
 

@@ -303,6 +303,11 @@ float Gfx::text(float x, float y, float size, const std::string& s, Color c, int
     float inv = 1.0f / scale_;
     float ratio = (float)px / (size * scale_);
     float k = inv / ratio;
+    const Layer& L = layers_.back();
+    if (L.s == 1.0f) {
+        x = std::round((x + L.tx) * scale_) / scale_ - L.tx;
+        y = std::round((y + L.ty) * scale_) / scale_ - L.ty;
+    }
     bindTexture(a->tex);
     float pen = 0;
     float base = a->ascent;

@@ -26,22 +26,28 @@ void drawIcon(Gfx& g, IconId id, const Rect& r, Color c, float battery) {
             if (id == IcExplorer) g.rect(R(1, 11.2f, 14, 2.6f), rgb(0x2F8FE0), 1.2f * u);
             break;
         }
-        case IcBrowser:
-        case IcGlyphGlobe: {
-            bool full = id == IcBrowser;
-            Color line = full ? rgb(0xFFFFFF, 0.92f) : c;
-            float rr = full ? 6.6f : 6.2f;
-            if (full) {
-                g.rectV(R(1.4f, 1.4f, 13.2f, 13.2f), rgb(0x45C0FF), rgb(0x0A58C2), 6.6f * u);
-                g.circle(X(5.6f), Y(5.0f), 2.4f * u, rgb(0xFFFFFF, 0.18f));
+        case IcBrowser: {
+            g.rectV(R(1.2f, 1.2f, 13.6f, 13.6f), rgb(0x3FE0C5), rgb(0x1466D6), 6.8f * u);
+            g.ring(X(8), Y(8), 5.3f * u, 0.9f * u, rgb(0xFFFFFF, 0.9f));
+            for (int i = 0; i < 4; i++) {
+                float a = i * kPi / 2;
+                L(8 + std::cos(a) * 5.3f, 8 + std::sin(a) * 5.3f, 8 + std::cos(a) * 4.2f, 8 + std::sin(a) * 4.2f, 0.9f,
+                  rgb(0xFFFFFF, 0.9f));
             }
-            g.ring(X(8), Y(8), rr * u, 0.9f * u, line);
-            L(8 - rr, 8, 8 + rr, 8, 0.9f, line);
-            L(8, 8 - rr, 8, 8 + rr, 0.9f, line);
-            L(8 - rr * 0.84f, 4.6f, 8 + rr * 0.84f, 4.6f, 0.8f, line);
-            L(8 - rr * 0.84f, 11.4f, 8 + rr * 0.84f, 11.4f, 0.8f, line);
-            g.arc(X(12.6f), Y(8), 6.3f * u, 2.32f, 3.96f, 0.9f * u, line);
-            g.arc(X(3.4f), Y(8), 6.3f * u, -0.82f, 0.82f, 0.9f * u, line);
+            float na = -kPi / 4;
+            float nx = std::cos(na), ny = std::sin(na);
+            L(8, 8, 8 + nx * 4.0f, 8 + ny * 4.0f, 1.9f, rgb(0xFF5A4E));
+            L(8, 8, 8 - nx * 4.0f, 8 - ny * 4.0f, 1.9f, rgb(0xFFFFFF));
+            g.circle(X(8), Y(8), 1.0f * u, rgb(0x1466D6));
+            break;
+        }
+        case IcGlyphGlobe: {
+            float rr = 6.2f;
+            g.ring(X(8), Y(8), rr * u, 0.9f * u, c);
+            L(8 - rr, 8, 8 + rr, 8, 0.9f, c);
+            L(8, 8 - rr, 8, 8 + rr, 0.9f, c);
+            g.arc(X(12.6f), Y(8), 6.3f * u, 2.32f, 3.96f, 0.9f * u, c);
+            g.arc(X(3.4f), Y(8), 6.3f * u, -0.82f, 0.82f, 0.9f * u, c);
             break;
         }
         case IcFile: {

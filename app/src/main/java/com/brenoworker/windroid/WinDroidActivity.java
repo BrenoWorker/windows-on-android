@@ -9,7 +9,9 @@ import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.view.Display;
 import android.view.DisplayCutout;
+import android.view.PixelCopy;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -88,6 +90,7 @@ public class WinDroidActivity extends NativeActivity {
     private volatile int insetTop;
     private volatile int insetRight;
     private volatile int insetBottom;
+    private WebView spare;
 
     private final class Browser {
         final int id;
@@ -104,6 +107,13 @@ public class WinDroidActivity extends NativeActivity {
         volatile boolean editable;
         volatile boolean desktop;
         volatile int[] snapshot;
+        boolean parked;
+        boolean capturing;
+        boolean wantVisible;
+        int px;
+        int py;
+        int pw = 1;
+        int ph = 1;
 
         Browser(int id) {
             this.id = id;
@@ -161,6 +171,35 @@ public class WinDroidActivity extends NativeActivity {
             });
         }
         immersive();
+        preferHighRefreshRate();
+        decor.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (spare == null && !isFinishing()) spare = buildWebView();
+            }
+        }, 1500);
+    }
+
+    @SuppressWarnings("deprecation")
+    private void preferHighRefreshRate() {
+        try {
+            Display display = getWindowManager().getDefaultDisplay();
+            Display.Mode current = display.getMode();
+            Display.Mode best = current;
+            for (Display.Mode m : display.getSupportedModes()) {
+                if (m.getPhysicalWidth() == current.getPhysicalWidth()
+                        && m.getPhysicalHeight() == current.getPhysicalHeight()
+                        && m.getRefreshRate() > best.getRefreshRate()) {
+                    best = m;
+                }
+            }
+            WindowManager.LayoutParams lp = getWindow().getAttributes();
+            lp.preferredDisplayModeId = best.getModeId();
+            lp.preferredRefreshRate = best.getRefreshRate();
+            getWindow().setAttributes(lp);
+        } catch (Throwable ignored) {
+            return;
+        }
     }
 
     @Override
@@ -188,6 +227,10 @@ public class WinDroidActivity extends NativeActivity {
     protected void onDestroy() {
         for (Browser b : browsers.values()) release(b);
         browsers.clear();
+        if (spare != null) {
+            spare.destroy();
+            spare = null;
+        }
         super.onDestroy();
     }
 
@@ -245,8 +288,7 @@ public class WinDroidActivity extends NativeActivity {
     }
 
     @SuppressLint("SetJavaScriptEnabled")
-    private void setup(final Browser b) {
-        if (!browsers.containsKey(b.id)) return;
+    private WebView buildWebView() {
         WebView web = new WebView(this);
         WebSettings s = web.getSettings();
         s.setJavaScriptEnabled(true);
@@ -259,10 +301,18 @@ public class WinDroidActivity extends NativeActivity {
         s.setMediaPlaybackRequiresUserGesture(false);
         s.setSupportMultipleWindows(false);
         s.setMixedContentMode(WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE);
-        b.defaultAgent = s.getUserAgentString();
+        s.setOffscreenPreRaster(true);
         CookieManager.getInstance().setAcceptCookie(true);
         CookieManager.getInstance().setAcceptThirdPartyCookies(web, true);
         web.setBackgroundColor(Color.WHITE);
+        return web;
+    }
+
+    private void setup(final Browser b) {
+        if (!browsers.containsKey(b.id)) return;
+        WebView web = spare != null ? spare : buildWebView();
+        spare = null;
+        b.defaultAgent = web.getSettings().getUserAgentString();
         web.addJavascriptInterface(new PageBridge(b), "WinDroid");
         web.setWebViewClient(new WebViewClient() {
             @Override
@@ -369,7 +419,12 @@ public class WinDroidActivity extends NativeActivity {
             @Override
             public void run() {
                 if (b.popup == null || isFinishing()) return;
+                b.wantVisible = visible;
                 if (visible) {
+                    b.px = x;
+                    b.py = y;
+                    b.pw = w;
+                    b.ph = h;
                     if (!b.popup.isShowing()) {
                         View anchor = getWindow().getDecorView();
                         if (anchor.getWindowToken() == null) return;
@@ -379,15 +434,68 @@ public class WinDroidActivity extends NativeActivity {
                     } else {
                         b.popup.update(x, y, w, h);
                     }
-                } else if (b.popup.isShowing()) {
+                    b.parked = false;
+                } else if (b.popup.isShowing() && !b.parked && !b.capturing) {
                     capture(b);
-                    b.popup.dismiss();
                 }
             }
         });
     }
 
-    private void capture(Browser b) {
+    private void park(Browser b) {
+        b.capturing = false;
+        if (b.popup == null || !b.popup.isShowing() || b.wantVisible) return;
+        b.popup.update(-30000, -30000, b.pw, b.ph);
+        b.parked = true;
+    }
+
+    private void capture(final Browser b) {
+        WebView web = b.web;
+        if (web == null) {
+            park(b);
+            return;
+        }
+        if (Build.VERSION.SDK_INT >= 34 && b.frame != null) {
+            b.capturing = true;
+            try {
+                PixelCopy.Request request = PixelCopy.Request.Builder.ofWindow(b.frame).build();
+                PixelCopy.request(request, getMainExecutor(), new java.util.function.Consumer<PixelCopy.Result>() {
+                    @Override
+                    public void accept(PixelCopy.Result result) {
+                        if (result.getStatus() == PixelCopy.SUCCESS && result.getBitmap() != null) {
+                            store(b, result.getBitmap());
+                        } else {
+                            drawSnapshot(b);
+                        }
+                        park(b);
+                    }
+                });
+                return;
+            } catch (Throwable t) {
+                b.capturing = false;
+            }
+        }
+        drawSnapshot(b);
+        park(b);
+    }
+
+    private void store(Browser b, Bitmap source) {
+        try {
+            Bitmap bmp = source.getConfig() == Bitmap.Config.ARGB_8888 ? source : source.copy(Bitmap.Config.ARGB_8888, false);
+            int w = bmp.getWidth(), h = bmp.getHeight();
+            if (w <= 0 || h <= 0 || (long) w * h > 8L * 1024 * 1024) return;
+            int[] data = new int[w * h + 2];
+            data[0] = w;
+            data[1] = h;
+            bmp.getPixels(data, 2, w, 0, 0, w, h);
+            if (bmp != source) bmp.recycle();
+            b.snapshot = data;
+        } catch (Throwable ignored) {
+            b.snapshot = null;
+        }
+    }
+
+    private void drawSnapshot(Browser b) {
         WebView web = b.web;
         if (web == null) return;
         int w = web.getWidth(), h = web.getHeight();
@@ -397,12 +505,8 @@ public class WinDroidActivity extends NativeActivity {
             Canvas canvas = new Canvas(bmp);
             canvas.drawColor(Color.WHITE);
             web.draw(canvas);
-            int[] data = new int[w * h + 2];
-            data[0] = w;
-            data[1] = h;
-            bmp.getPixels(data, 2, w, 0, 0, w, h);
+            store(b, bmp);
             bmp.recycle();
-            b.snapshot = data;
         } catch (Throwable ignored) {
             b.snapshot = null;
         }

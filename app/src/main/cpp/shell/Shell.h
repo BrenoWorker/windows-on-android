@@ -86,6 +86,10 @@ public:
     virtual bool wantsText() const { return false; }
     virtual bool onBack() { return false; }
     virtual void hidden() {}
+    virtual bool customTitle() const { return false; }
+    virtual Color titleColor(const Theme& th, bool focused) const { return focused ? th.mica : th.surface; }
+    virtual bool titleHit(const Rect& bar, float x, float y) { return false; }
+    virtual void drawTitle(Ui& ui, const Rect& bar, bool focused) {}
 
     Shell* shell = nullptr;
     AppKind kind = AppKind::Notepad;
@@ -106,6 +110,8 @@ public:
     bool resizable = true;
     bool exclusive = false;
     bool drawn = false;
+    bool darkChrome = false;
+    float titleH = 32;
 };
 
 class Shell {
@@ -162,9 +168,9 @@ public:
     bool nightLight() const { return night_; }
 
 private:
-    enum class State { Boot, Lock, Desktop, Shutdown };
+    enum class State { Boot, Lock, SignIn, Welcome, Desktop, Restarting, Shutdown };
     enum class Owner { None, Desktop, Window, Taskbar, Start, Quick, Calendar, Context, Keyboard };
-    enum class Part { None, Client, Title, Resize, Buttons };
+    enum class Part { None, Client, Title, TitleApp, Resize, Buttons };
     struct Ev {
         int type;
         float x, y;
@@ -190,6 +196,8 @@ private:
     void drawBoot();
     void drawLock();
     void drawShutdown();
+    void drawSignIn(bool interactive, bool welcome);
+    void drawRestarting();
     void drawDesktop(bool interactive);
     void drawSpinner(float cx, float cy, float r, Color c);
     void drawDesktopIcons(bool cap);
@@ -273,6 +281,8 @@ private:
     float brightness_ = 1.0f, volume_ = 0.6f;
     float lockOffset_ = 0;
     bool unlocking_ = false;
+    bool signPower_ = false;
+    float deskFade_ = 1;
     float battery_ = 1.0f;
     double batteryT_ = -100;
     int openCount_ = 0;
