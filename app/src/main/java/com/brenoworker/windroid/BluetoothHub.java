@@ -144,8 +144,12 @@ final class BluetoothHub {
         registered = false;
     }
 
+    private boolean modern() {
+        return Build.VERSION.SDK_INT >= 31 && activity.getApplicationInfo().targetSdkVersion >= 31;
+    }
+
     private String[] permissions() {
-        if (Build.VERSION.SDK_INT >= 31)
+        if (modern())
             return new String[] {Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT};
         if (Build.VERSION.SDK_INT >= 29) return new String[] {Manifest.permission.ACCESS_FINE_LOCATION};
         return new String[] {Manifest.permission.ACCESS_COARSE_LOCATION};
@@ -159,7 +163,7 @@ final class BluetoothHub {
     }
 
     private boolean canConnect() {
-        return Build.VERSION.SDK_INT < 31 || activity.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
+        return !modern() || activity.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED;
     }
 
     void requestPermission() {

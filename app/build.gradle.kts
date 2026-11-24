@@ -10,7 +10,7 @@ android {
     defaultConfig {
         applicationId = "com.brenoworker.windroid"
         minSdk = 24
-        targetSdk = 34
+        targetSdk = 28
         versionCode = 1
         versionName = "1.0.0"
 
@@ -30,6 +30,12 @@ android {
             isMinifyEnabled = false
             signingConfig = signingConfigs.getByName("debug")
         }
+    }
+
+    lint {
+        checkReleaseBuilds = false
+        abortOnError = false
+        disable += setOf("ExpiredTargetSdkVersion", "OldTargetApi")
     }
 
     packaging {

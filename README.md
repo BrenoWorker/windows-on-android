@@ -98,14 +98,20 @@ Game controllers work everywhere: the D-pad and A/B/X/Y/L1/Start navigate WinDro
 
 ## Windows programs (.exe)
 
-WinDroid opens `.exe` files with **Box64** (x86-64 to ARM64 dynamic recompiler, built in CI as `libbox64.so`) and **Wine**.
+WinDroid runs `.exe` files with **Box64** and **Wine** inside a Debian arm64 root filesystem started through **proot**:
 
-- Opening an `.exe` shows its icon, publisher, version, architecture and installer type, with **Run** and **Install**. Installing copies it to `C:\Program Files\<App>` and adds it to **All apps** on the Start menu and, optionally, to the desktop as a shortcut (`.lnk`).
-- Settings > Apps downloads the Wine runtime once (or installs it from a local `.tar.gz`), and lists and uninstalls installed apps.
-- The runtime package is built by the **Windows Runtime** workflow (`runtime/build-runtime.sh`, Debian + Wine x64) and published to the `runtime-v1` release, which is where WinDroid downloads it from.
-- WinDroid's `C:` drive is mapped as `D:` inside Wine.
+```
+WinDroid ── proot ── Xvfb :1 (native arm64, framebuffer in /tmp/Xvfb_screen0)
+                 └── box64 → wine64 explorer /desktop=WinDroid,WxH start /unix <app.exe>
+WinDroid "Windows" window ── reads the framebuffer, sends touch and keys over the X socket (XTEST)
+```
 
-Current stage: console programs run and their output/input is shown in a console window. Graphical programs start, but their windows need the WinDroid display server, which is the next stage. 64-bit programs are the target; 32-bit ones need a WoW64 runtime. Box64 is built against Android API 31, so running programs needs Android 12 or newer.
+- Opening an `.exe` shows its icon, publisher, version, architecture and installer type, with **Run** and **Install**. Installing copies it to `C:\Program Files\<App>` and adds it to **All apps** on the Start menu and, optionally, a desktop shortcut.
+- Graphical programs open in the **Windows** window: tap to click, drag to drag, long press (or the Right click button) for a right click, and the keyboard button for typing. Console programs run in a console window with input and output.
+- Settings > Apps downloads the runtime once (or installs it from a local `.tar.gz`) and lists and uninstalls installed apps.
+- The runtime is built by the **Windows Runtime** workflow (`runtime/build-runtime.sh`) and published to the `runtime-v2` release, which is where WinDroid downloads it from. proot comes from the Termux packages and is bundled in the APK by the Android Build workflow.
+- WinDroid's `C:` drive is mounted at `/mnt/c` and appears as `D:` inside Wine.
+- `targetSdk` is 28 so the runtime can execute binaries from the app's private storage, like Termux and Winlator.
 
 ## Project layout
 

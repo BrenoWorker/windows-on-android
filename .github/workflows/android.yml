@@ -23,27 +23,29 @@ jobs:
         with:
           gradle-version: 8.14.3
 
-      - name: Cache Box64
-        id: box64-cache
-        uses: actions/cache@v4
-        with:
-          path: app/src/main/jniLibs/arm64-v8a/libbox64.so
-          key: box64-v0.4.4-android31-r1
-
-      - name: Build Box64
-        if: steps.box64-cache.outputs.cache-hit != 'true'
-        continue-on-error: true
+      - name: Fetch proot
         run: |
-          git clone --depth 1 --branch v0.4.4 https://github.com/ptitSeb/box64 "$RUNNER_TEMP/box64"
-          BIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          cmake -S "$RUNNER_TEMP/box64" -B "$RUNNER_TEMP/box64/build" \
-            -DCMAKE_C_COMPILER="$BIN/aarch64-linux-android31-clang" \
-            -DANDROID=1 -DARM_DYNAREC=1 -DBAD_SIGNAL=1 \
-            -DCMAKE_BUILD_TYPE=Release -DCI=False
-          cmake --build "$RUNNER_TEMP/box64/build" -j"$(nproc)"
-          mkdir -p app/src/main/jniLibs/arm64-v8a
-          cp "$RUNNER_TEMP/box64/build/box64" app/src/main/jniLibs/arm64-v8a/libbox64.so
-          "$BIN/llvm-strip" app/src/main/jniLibs/arm64-v8a/libbox64.so
+          sudo apt-get install -y patchelf
+          REPO=https://packages.termux.dev/apt/termux-main
+          curl -fsSL "$REPO/dists/stable/main/binary-aarch64/Packages" -o "$RUNNER_TEMP/Packages"
+          pkgfile() { awk -v p="$1" '$1=="Package:"{cur=$2} cur==p && $1=="Filename:"{print $2; exit}' "$RUNNER_TEMP/Packages"; }
+          mkdir -p "$RUNNER_TEMP/termux" app/src/main/jniLibs/arm64-v8a
+          for p in proot libtalloc; do
+            f="$(pkgfile "$p")"
+            test -n "$f"
+            curl -fsSL "$REPO/$f" -o "$RUNNER_TEMP/$p.deb"
+            rm -rf "$RUNNER_TEMP/deb" && mkdir "$RUNNER_TEMP/deb"
+            (cd "$RUNNER_TEMP/deb" && ar x "../$p.deb" && tar -xf data.tar.* -C "$RUNNER_TEMP/termux")
+          done
+          U="$RUNNER_TEMP/termux/data/data/com.termux/files/usr"
+          L=app/src/main/jniLibs/arm64-v8a
+          cp "$U/bin/proot" "$L/libproot.so"
+          cp "$U/libexec/proot/loader" "$L/libproot-loader.so"
+          cp -L "$U/lib/libtalloc.so.2" "$L/libtalloc.so"
+          patchelf --replace-needed libtalloc.so.2 libtalloc.so "$L/libproot.so"
+          patchelf --remove-rpath "$L/libproot.so"
+          patchelf --set-soname libtalloc.so "$L/libtalloc.so"
+          readelf -d "$L/libproot.so" | grep NEEDED
 
       - name: Build APK
         run: gradle assembleRelease --no-daemon --stacktrace

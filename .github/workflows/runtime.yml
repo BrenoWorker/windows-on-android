@@ -5,7 +5,7 @@ on:
     inputs:
       tag:
         description: Release tag that WinDroid downloads the runtime from
-        default: runtime-v1
+        default: runtime-v2
         required: true
 
 permissions:
@@ -21,7 +21,7 @@ jobs:
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y debootstrap file
+          sudo apt-get install -y debootstrap file qemu-user-static binfmt-support gcc-aarch64-linux-gnu cmake python3
 
       - name: Build runtime
         run: sudo bash runtime/build-runtime.sh "$RUNNER_TEMP/out"
@@ -33,6 +33,6 @@ jobs:
         run: |
           if ! gh release view "$TAG" >/dev/null 2>&1; then
             gh release create "$TAG" --title "WinDroid Windows runtime" \
-              --notes "Wine (x64) root filesystem used by WinDroid with Box64 to run .exe files."
+              --notes "Debian arm64 root filesystem with Box64, Wine (x64) and Xvfb, used by WinDroid to run .exe files."
           fi
-          gh release upload "$TAG" "$RUNNER_TEMP/out/windroid-runtime-x86_64.tar.gz" --clobber
+          gh release upload "$TAG" "$RUNNER_TEMP/out/windroid-runtime-arm64.tar.gz" --clobber

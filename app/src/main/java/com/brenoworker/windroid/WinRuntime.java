@@ -24,8 +24,9 @@ import java.util.zip.GZIPInputStream;
 final class WinRuntime {
 
     static final String DEFAULT_URL =
-            "https://github.com/BrenoWorker/windows-on-android/releases/download/runtime-v1/windroid-runtime-x86_64.tar.gz";
+            "https://github.com/BrenoWorker/windows-on-android/releases/download/runtime-v2/windroid-runtime-arm64.tar.gz";
     private static final int MAX_OUTPUT = 256 * 1024;
+    private static final String DISPLAY = ":1";
 
     private static final class Job {
         Process process;
@@ -36,11 +37,14 @@ final class WinRuntime {
 
     private final Context context;
     private final File base;
-    private final File runtime;
-    private final File prefix;
+    private final File rootfs;
     private final File tmp;
-    private final File home;
-    private final File box64;
+    private final File shm;
+    private final File prootTmp;
+    private final File drive;
+    private final File libDir;
+    private final File proot;
+    private final File loader;
     private final Map<Integer, Job> jobs = new ConcurrentHashMap<>();
     private final AtomicInteger nextJob = new AtomicInteger(1);
     private volatile String state = "idle";
@@ -49,15 +53,22 @@ final class WinRuntime {
     private volatile String message = "";
     private volatile int messageSeq;
     private volatile boolean cancel;
+    private volatile Job xvfb;
+    private volatile String session = "off";
+    private volatile int screenW = 1280;
+    private volatile int screenH = 720;
 
     WinRuntime(Context context) {
         this.context = context;
         base = new File(context.getFilesDir(), "wine");
-        runtime = new File(base, "runtime");
-        prefix = new File(base, "prefix");
+        rootfs = new File(base, "rootfs");
         tmp = new File(base, "tmp");
-        home = new File(base, "home");
-        box64 = new File(context.getApplicationInfo().nativeLibraryDir, "libbox64.so");
+        shm = new File(base, "shm");
+        prootTmp = new File(base, "proot-tmp");
+        drive = new File(context.getFilesDir(), "C");
+        libDir = new File(context.getApplicationInfo().nativeLibraryDir);
+        proot = new File(libDir, "libproot.so");
+        loader = new File(libDir, "libproot-loader.so");
     }
 
     private void setMessage(String m) {
@@ -66,19 +77,24 @@ final class WinRuntime {
     }
 
     boolean installed() {
-        return new File(runtime, "windroid-runtime.ini").isFile();
+        return new File(rootfs, "windroid-runtime.ini").isFile();
+    }
+
+    private boolean busy() {
+        return state.equals("downloading") || state.equals("extracting");
     }
 
     String status() {
         Map<String, String> ini = installed() ? readIni() : new HashMap<String, String>();
         int progress = total > 0 ? (int) Math.min(1000, done * 1000 / total) : -1;
         String msg = message;
-        return (box64.isFile() ? 1 : 0) + "\t" + (installed() ? 1 : 0) + "\t" + state + "\t" + progress + "\t"
-                + clean(ini.containsKey("version") ? ini.get("version") : "") + "\t" + clean(msg) + "\t" + done + "\t" + messageSeq;
+        return (proot.isFile() && loader.isFile() ? 1 : 0) + "\t" + (installed() ? 1 : 0) + "\t" + state + "\t" + progress + "\t"
+                + clean(ini.containsKey("version") ? ini.get("version") : "") + "\t" + clean(msg) + "\t" + done + "\t" + messageSeq
+                + "\t" + session + "\t" + screenW + "\t" + screenH;
     }
 
     void install(final String source) {
-        if (state.equals("downloading") || state.equals("extracting")) return;
+        if (busy()) return;
         cancel = false;
         state = "downloading";
         done = 0;
@@ -87,7 +103,7 @@ final class WinRuntime {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                File staging = new File(base, "runtime.new");
+                File staging = new File(base, "rootfs.new");
                 try {
                     deleteTree(staging);
                     staging.mkdirs();
@@ -97,11 +113,16 @@ final class WinRuntime {
                         untar(in, staging);
                     }
                     if (cancel) throw new IOException("Cancelled");
-                    if (!new File(staging, "windroid-runtime.ini").isFile()) throw new IOException("This file is not a WinDroid runtime package");
-                    deleteTree(runtime);
-                    if (!staging.renameTo(runtime)) throw new IOException("Couldn't finish the installation");
-                    tmp.mkdirs();
-                    home.mkdirs();
+                    File ini = new File(staging, "windroid-runtime.ini");
+                    if (!ini.isFile()) throw new IOException("This file is not a WinDroid runtime package");
+                    stopSession();
+                    deleteTree(rootfs);
+                    deleteTree(new File(base, "runtime"));
+                    if (!staging.renameTo(rootfs)) throw new IOException("Couldn't finish the installation");
+                    if (!"2".equals(readIni().get("format"))) {
+                        deleteTree(rootfs);
+                        throw new IOException("This runtime package is from an older version of WinDroid");
+                    }
                     state = "idle";
                     setMessage("Windows compatibility runtime installed");
                 } catch (Throwable t) {
@@ -118,18 +139,25 @@ final class WinRuntime {
     }
 
     void remove() {
-        if (state.equals("downloading") || state.equals("extracting")) return;
-        for (Job j : jobs.values())
-            if (j.process != null) j.process.destroy();
-        deleteTree(runtime);
-        deleteTree(prefix);
+        if (busy()) return;
+        stopSession();
+        deleteTree(rootfs);
+        deleteTree(new File(base, "runtime"));
+        deleteTree(new File(base, "prefix"));
         deleteTree(tmp);
+        deleteTree(shm);
         setMessage("Runtime removed");
     }
 
     void resetPrefix() {
-        deleteTree(prefix);
+        stopSession();
+        deleteTree(new File(rootfs, "root/.wine"));
         setMessage("Windows settings were reset");
+    }
+
+    String display() {
+        return session + "\t" + new File(tmp, ".X11-unix/X1").getPath() + "\t" + new File(tmp, "Xvfb_screen0").getPath() + "\t" + screenW
+                + "\t" + screenH;
     }
 
     private InputStream open(String source) throws IOException {
@@ -385,7 +413,7 @@ final class WinRuntime {
 
     private Map<String, String> readIni() {
         Map<String, String> m = new HashMap<>();
-        File f = new File(runtime, "windroid-runtime.ini");
+        File f = new File(rootfs, "windroid-runtime.ini");
         try (InputStream in = new FileInputStream(f)) {
             byte[] data = new byte[(int) Math.min(f.length(), 65536)];
             readFully(in, data, data.length);
@@ -425,59 +453,94 @@ final class WinRuntime {
     }
 
     private void linkDrive() {
-        File dos = new File(prefix, "dosdevices");
+        File dos = new File(rootfs, "root/.wine/dosdevices");
         if (!dos.isDirectory()) return;
         File d = new File(dos, "d:");
         try {
             Os.lstat(d.getPath());
         } catch (Exception missing) {
             try {
-                Os.symlink(new File(context.getFilesDir(), "C").getPath(), d.getPath());
+                Os.symlink("/mnt/c", d.getPath());
             } catch (Exception ignored) {
             }
         }
     }
 
-    int run(String exe, String args) {
-        final Job job = new Job();
-        int id = nextJob.getAndIncrement();
-        jobs.put(id, job);
-        if (!box64.isFile()) return fail(job, id, "Box64 is not included in this build of WinDroid.");
-        if (!installed()) return fail(job, id, "The Windows compatibility runtime is not installed.");
-        Map<String, String> ini = readIni();
-        String wine = ini.get("wine");
-        if (wine == null || !new File(runtime, wine).isFile()) return fail(job, id, "The runtime package is missing Wine.");
+    private String guestPath(String hostPath) {
+        String c = drive.getPath();
+        if (hostPath.equals(c)) return "/mnt/c";
+        if (hostPath.startsWith(c + "/")) return "/mnt/c" + hostPath.substring(c.length());
+        String r = rootfs.getPath();
+        if (hostPath.startsWith(r + "/")) return hostPath.substring(r.length());
+        return hostPath;
+    }
+
+    private ProcessBuilder guest(List<String> inner, String cwd) {
         tmp.mkdirs();
-        home.mkdirs();
-        prefix.mkdirs();
-        linkDrive();
+        shm.mkdirs();
+        prootTmp.mkdirs();
+        drive.mkdirs();
+        new File(rootfs, "mnt/c").mkdirs();
+        new File(rootfs, "root").mkdirs();
         List<String> cmd = new ArrayList<>();
-        cmd.add(box64.getPath());
-        cmd.add(new File(runtime, wine).getPath());
-        if (exe != null && !exe.isEmpty()) cmd.add(exe);
-        cmd.addAll(splitArgs(args));
+        cmd.add(proot.getPath());
+        cmd.add("--kill-on-exit");
+        cmd.add("--link2symlink");
+        cmd.add("-r");
+        cmd.add(rootfs.getPath());
+        for (String b : new String[] {"/dev", "/proc", "/sys"}) {
+            cmd.add("-b");
+            cmd.add(b);
+        }
+        cmd.add("-b");
+        cmd.add(tmp.getPath() + ":/tmp");
+        cmd.add("-b");
+        cmd.add(shm.getPath() + ":/dev/shm");
+        cmd.add("-b");
+        cmd.add(drive.getPath() + ":/mnt/c");
+        cmd.add("-w");
+        cmd.add(cwd == null ? "/root" : cwd);
+        cmd.add("/usr/bin/env");
+        cmd.add("-i");
+        cmd.add("HOME=/root");
+        cmd.add("USER=root");
+        cmd.add("PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin");
+        cmd.add("TMPDIR=/tmp");
+        cmd.add("DISPLAY=" + DISPLAY);
+        cmd.add("LANG=C.UTF-8");
+        cmd.add("WINEPREFIX=/root/.wine");
+        cmd.add("WINEDEBUG=-all");
+        cmd.add("WINEDLLOVERRIDES=mscoree=;mshtml=;winemenubuilder.exe=d");
+        cmd.add("BOX64_NOBANNER=1");
+        cmd.add("BOX64_LOG=0");
+        cmd.addAll(inner);
         ProcessBuilder pb = new ProcessBuilder(cmd);
-        File dir = exe == null ? null : new File(exe).getParentFile();
-        pb.directory(dir != null && dir.isDirectory() ? dir : home);
+        pb.directory(base);
         pb.redirectErrorStream(true);
         Map<String, String> env = pb.environment();
-        String root = runtime.getPath();
-        env.put("HOME", home.getPath());
-        env.put("TMPDIR", tmp.getPath());
-        env.put("XDG_RUNTIME_DIR", tmp.getPath());
-        env.put("WINEPREFIX", prefix.getPath());
-        env.put("WINEDEBUG", "-all");
-        env.put("WINEDLLOVERRIDES", "mscoree=;mshtml=;winemenubuilder.exe=d");
-        env.put("BOX64_NOBANNER", "1");
-        env.put("BOX64_LOG", "0");
-        env.put("LANG", "C.UTF-8");
-        env.remove("DISPLAY");
-        for (Map.Entry<String, String> e : ini.entrySet())
-            if (e.getKey().startsWith("env.")) env.put(e.getKey().substring(4), e.getValue().replace("@ROOT@", root).replace("@PREFIX@", prefix.getPath()));
+        env.put("LD_LIBRARY_PATH", libDir.getPath());
+        env.put("PROOT_LOADER", loader.getPath());
+        env.put("PROOT_TMP_DIR", prootTmp.getPath());
+        env.remove("LD_PRELOAD");
+        return pb;
+    }
+
+    private String check() {
+        if (!proot.isFile() || !loader.isFile()) return "proot is not included in this build of WinDroid.";
+        if (!installed()) return "The Windows compatibility runtime is not installed.";
+        return null;
+    }
+
+    private Job spawn(int id, ProcessBuilder pb) {
+        final Job job = new Job();
+        jobs.put(id, job);
         try {
             job.process = pb.start();
         } catch (IOException e) {
-            return fail(job, id, "Couldn't start the program: " + e.getMessage());
+            append(job, "Couldn't start: " + e.getMessage() + "\n");
+            job.exit = -1;
+            job.done = true;
+            return job;
         }
         new Thread(new Runnable() {
             @Override
@@ -495,7 +558,112 @@ final class WinRuntime {
                 }
                 job.done = true;
             }
-        }, "wine-" + id).start();
+        }, "guest-" + id).start();
+        return job;
+    }
+
+    synchronized void startSession(int w, int h) {
+        if (xvfb != null && !xvfb.done && (session.equals("ready") || session.equals("starting"))) return;
+        if (check() != null || !proot.canExecute() && !proot.setExecutable(true)) {
+            session = "failed";
+            setMessage(check() == null ? "Couldn't start the Windows display" : check());
+            return;
+        }
+        screenW = Math.max(640, Math.min(w, 2560)) & ~7;
+        screenH = Math.max(400, Math.min(h, 1600)) & ~7;
+        session = "starting";
+        new File(tmp, ".X1-lock").delete();
+        new File(tmp, ".X11-unix/X1").delete();
+        new File(tmp, "Xvfb_screen0").delete();
+        new File(tmp, ".X11-unix").mkdirs();
+        Map<String, String> ini = readIni();
+        String server = ini.containsKey("xvfb") ? ini.get("xvfb") : "/usr/bin/Xvfb";
+        List<String> inner = new ArrayList<>();
+        inner.add(server);
+        inner.add(DISPLAY);
+        inner.add("-screen");
+        inner.add("0");
+        inner.add(screenW + "x" + screenH + "x24");
+        inner.add("-fbdir");
+        inner.add("/tmp");
+        inner.add("-nolisten");
+        inner.add("tcp");
+        inner.add("-ac");
+        inner.add("-dpi");
+        inner.add("96");
+        final int id = nextJob.getAndIncrement();
+        final Job job = spawn(id, guest(inner, "/root"));
+        xvfb = job;
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                File sock = new File(tmp, ".X11-unix/X1");
+                File fb = new File(tmp, "Xvfb_screen0");
+                for (int i = 0; i < 300 && !job.done; i++) {
+                    if (sock.exists() && fb.isFile() && fb.length() > 0) {
+                        session = "ready";
+                        return;
+                    }
+                    try {
+                        Thread.sleep(100);
+                    } catch (InterruptedException e) {
+                        return;
+                    }
+                }
+                session = "failed";
+                String log;
+                synchronized (job.out) {
+                    log = job.out.toString().trim();
+                }
+                setMessage("The Windows display didn't start" + (log.isEmpty() ? "" : ": " + log.substring(Math.max(0, log.length() - 200))));
+                if (job.process != null) job.process.destroy();
+            }
+        }, "xvfb-wait").start();
+    }
+
+    synchronized void stopSession() {
+        for (Job j : jobs.values())
+            if (j.process != null && !j.done) j.process.destroy();
+        Job x = xvfb;
+        if (x != null && x.process != null) x.process.destroy();
+        xvfb = null;
+        session = "off";
+    }
+
+    int run(String exe, String args, boolean gui) {
+        int id = nextJob.getAndIncrement();
+        String problem = check();
+        if (problem != null) {
+            Job job = new Job();
+            jobs.put(id, job);
+            return fail(job, id, problem);
+        }
+        Map<String, String> ini = readIni();
+        String wine = ini.get("wine");
+        String box64 = ini.containsKey("box64") ? ini.get("box64") : "/usr/local/bin/box64";
+        if (wine == null) {
+            Job job = new Job();
+            jobs.put(id, job);
+            return fail(job, id, "The runtime package is missing Wine.");
+        }
+        linkDrive();
+        List<String> inner = new ArrayList<>();
+        inner.add(box64);
+        inner.add(wine);
+        if (gui) {
+            inner.add("explorer");
+            inner.add("/desktop=WinDroid," + screenW + "x" + screenH);
+            inner.add("start");
+            inner.add("/unix");
+        }
+        String cwd = "/root";
+        if (exe != null && !exe.isEmpty()) {
+            inner.add(guestPath(exe));
+            File parent = new File(exe).getParentFile();
+            if (parent != null) cwd = guestPath(parent.getPath());
+        }
+        inner.addAll(splitArgs(args));
+        spawn(id, guest(inner, cwd));
         return id;
     }
 

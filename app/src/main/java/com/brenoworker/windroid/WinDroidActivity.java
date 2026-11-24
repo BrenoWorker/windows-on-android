@@ -568,11 +568,24 @@ public class WinDroidActivity extends NativeActivity {
                 rt.resetPrefix();
                 return "";
             case "exe.run": {
-                int tab = arg.indexOf('\t');
-                String exe = tab < 0 ? arg : arg.substring(0, tab);
-                String args = tab < 0 ? "" : arg.substring(tab + 1);
-                return String.valueOf(rt.run(exe, args));
+                String[] f = arg.split("\t", -1);
+                String exe = f.length > 0 ? f[0] : "";
+                String args = f.length > 1 ? f[1] : "";
+                boolean gui = f.length > 2 && f[2].equals("1");
+                return String.valueOf(rt.run(exe, args, gui));
             }
+            case "wine.session": {
+                int x = arg.indexOf('x');
+                int w = x > 0 ? parseInt(arg.substring(0, x)) : 1280;
+                int h = x > 0 ? parseInt(arg.substring(x + 1)) : 720;
+                rt.startSession(w > 0 ? w : 1280, h > 0 ? h : 720);
+                return rt.display();
+            }
+            case "wine.display":
+                return rt.display();
+            case "wine.stop":
+                rt.stopSession();
+                return "";
             case "exe.poll":
                 return rt.poll(parseInt(arg));
             case "exe.write": {
@@ -613,6 +626,7 @@ public class WinDroidActivity extends NativeActivity {
     @Override
     protected void onDestroy() {
         if (bluetooth != null) bluetooth.stop();
+        if (winRuntime != null) winRuntime.stopSession();
         for (Browser b : browsers.values()) release(b);
         browsers.clear();
         if (spare != null) {

@@ -111,6 +111,7 @@ public:
     virtual bool wantsText() const { return false; }
     virtual bool onBack() { return false; }
     virtual bool gamepad(int button, bool down) { return false; }
+    virtual bool launchProgram(const std::string& exe, const std::string& args) { return false; }
     virtual void hidden() {}
     virtual bool customTitle() const { return false; }
     virtual Color titleColor(const Theme& th, bool focused) const { return focused ? th.mica : th.surface; }
@@ -162,6 +163,7 @@ public:
     AppWindow* open(AppKind k, const std::string& arg = "");
     AppWindow* attach(std::unique_ptr<AppWindow> w, AppKind k);
     AppWindow* openProgram(const std::string& exe, bool run, const std::string& args = "");
+    AppWindow* runWindowsApp(const std::string& exe, const std::string& args = "");
     void drawFileIcon(const std::string& path, IconId fallback, const Rect& r, Color c);
     void openFile(const std::string& path);
     void prompt(const std::string& title, const std::string& message, const std::string& initial,

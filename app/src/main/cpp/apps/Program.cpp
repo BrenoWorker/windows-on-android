@@ -81,15 +81,16 @@ private:
             mode_ = Mode::NoRuntime;
             return;
         }
+        if (!pe_.console) {
+            shell->runWindowsApp(exe_, args_);
+            shell->close(this);
+            return;
+        }
         mode_ = Mode::Console;
         lines_.clear();
         partial_.clear();
-        if (!pe_.console)
-            addText("Starting " + name_ + "...\nThis is a graphical program. Its windows need the WinDroid display, which isn't available yet, so "
-                    "only its text output is shown here.\n\n");
-        else
-            addText("Starting " + name_ + "...\n\n");
-        std::string id = shell->sys("exe.run", exe_ + "\t" + args_);
+        addText("Starting " + name_ + "...\n\n");
+        std::string id = shell->sys("exe.run", exe_ + "\t" + args_ + "\t0");
         job_ = atoi(id.c_str());
         running_ = job_ > 0;
         if (job_ <= 0) addText("Couldn't start the program.\n");

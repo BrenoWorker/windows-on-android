@@ -395,6 +395,23 @@ const std::vector<Shortcut>& Shell::programs() {
     return progs_;
 }
 
+AppWindow* Shell::runWindowsApp(const std::string& exe, const std::string& args) {
+    for (auto& w : windows_)
+        if (w->kind == AppKind::Program && !w->closing && w->launchProgram(exe, args)) {
+            focus(w.get());
+            return w.get();
+        }
+    AppWindow* w = attach(makeWindowsDisplay(*this), AppKind::Program);
+    if (w) {
+        w->launchProgram(exe, args);
+        Rect wa = workArea();
+        w->restore = w->frame;
+        w->maximized = true;
+        w->frame = wa;
+    }
+    return w;
+}
+
 void Shell::loadFileIcon(const std::string& path, FileIcon& fi) {
     struct stat st;
     long long mt = stat(path.c_str(), &st) == 0 ? (long long)st.st_mtime : 0;

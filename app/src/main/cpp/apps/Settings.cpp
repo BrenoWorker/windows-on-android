@@ -396,7 +396,7 @@ private:
             int progress = atoi(rt_[3].c_str());
             float ty = y;
             if (!box) {
-                y = row(ui, x, y, w, IcDialog, "Box64 is missing", "This build of WinDroid doesn't include the x64 emulator", 72);
+                y = row(ui, x, y, w, IcDialog, "proot is missing", "This build of WinDroid can't start the Windows runtime", 72);
             } else if (state == "downloading" || state == "extracting") {
                 card(g, th, {x, y, w, 88});
                 drawIcon(g, IcGlyphDown, {x + 18, y + 18, 20, 20}, th.text);
@@ -411,13 +411,13 @@ private:
                 if (ui.button({x + w - 116, y + 28, 100, 32}, "Cancel")) sh->sys("rt.cancel");
                 y += 92;
             } else if (!inst) {
-                std::string sub = state == "failed" && !rt_[5].empty() ? "Last attempt failed: " + rt_[5] : "Download Box64 + Wine (x64) once to open .exe files";
+                std::string sub = state == "failed" && !rt_[5].empty() ? "Last attempt failed: " + rt_[5] : "Download Box64 + Wine once (about 300 MB) to open .exe files";
                 y = row(ui, x, y, w, IcDialog, "Run Windows programs", sub, 72);
                 if (ui.button({x + w - 116, ty + 20, 100, 32}, "Download", true)) sh->sys("rt.install", "");
                 ty = y;
                 y = row(ui, x, y, w, IcGlyphOpen, "Install from a file", "Use a windroid-runtime .tar.gz you already downloaded");
                 if (ui.button({x + w - 116, ty + 16, 100, 32}, "Choose")) {
-                    std::string def = shell->displayPath(fs::join(shell->userDir(), "Downloads/windroid-runtime-x86_64.tar.gz"));
+                    std::string def = shell->displayPath(fs::join(shell->userDir(), "Downloads/windroid-runtime-arm64.tar.gz"));
                     sh->prompt("Install runtime", "Path to the runtime package:", def, [sh](const std::string& p) {
                         if (!p.empty()) sh->sys("rt.install", sh->realPath(p, sh->root()));
                     });
