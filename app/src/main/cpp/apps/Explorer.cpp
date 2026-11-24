@@ -98,6 +98,8 @@ public:
             cmds.push_back({IcTerminal, "Terminal", inFolder, 5});
             bool selFile = hasSel && !entries_[(size_t)sel_].dir;
             if (selFile && fs::extension(entries_[(size_t)sel_].name) == "exe") cmds.push_back({IcGlyphOpen, "Install", true, 6});
+            if (selFile && (fs::extension(entries_[(size_t)sel_].name) == "zip" || fs::extension(entries_[(size_t)sel_].name) == "rar"))
+                cmds.push_back({IcArchive, "Extract all", true, 8});
             if (selFile) cmds.push_back({IcGlyphBluetooth, "Send", true, 7});
         }
         for (auto& cm : cmds) {
@@ -227,6 +229,8 @@ private:
         } else if (id == 7 && sel_ >= 0) {
             std::string err = sh->sys("bt.send", fs::join(path_, entries_[(size_t)sel_].name));
             if (!err.empty()) sh->message("Send via Bluetooth", err);
+        } else if (id == 8 && sel_ >= 0) {
+            sh->extract(fs::join(path_, entries_[(size_t)sel_].name));
         } else if (id == 10) {
             for (auto& e : fs::list(sh->recycleDir())) fs::removeAll(fs::join(sh->recycleDir(), e.name));
             sh->notifyFs();
@@ -329,7 +333,8 @@ private:
             Rect row{r.x + 4, y, r.w - 8, rowH - 2};
             const fs::Entry& e = entries_[i];
             ui.pressFill(row, 4, (int)i == sel_);
-            IconId ic = e.dir ? IcFolder : (fs::extension(e.name) == "bmp" ? IcImage : IcFile);
+            std::string ex = fs::extension(e.name);
+            IconId ic = e.dir ? IcFolder : (ex == "bmp" ? IcImage : (ex == "zip" || ex == "rar" ? IcArchive : IcFile));
             shell->drawFileIcon(fs::join(path_, e.name), ic, {colX[0], row.cy() - 10, 20, 20}, th.text);
             float nameMax = (showDate ? colX[1] : (showSize ? colX[3] : r.r())) - colX[0] - 40;
             std::string shown = !e.dir && fs::extension(e.name) == "lnk" ? fs::stem(e.name) : e.name;

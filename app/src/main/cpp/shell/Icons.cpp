@@ -386,6 +386,14 @@ void drawIcon(Gfx& g, IconId id, const Rect& r, Color c, float battery) {
             L(8, 11, 8, 13.5f, t, c);
             L(5, 13.8f, 11, 13.8f, t, c);
             break;
+        case IcArchive: {
+            g.rect(R(2.5f, 1, 11, 14), rgb(0xF4C542), 1.2f * u);
+            g.rect(R(2.5f, 1, 11, 3), rgb(0xE0A82E), 1.2f * u);
+            for (int i = 0; i < 5; i++) g.rect(R(i % 2 ? 8 : 7, 2 + i * 1.6f, 1, 1.2f), rgb(0x5A4A2A), 0);
+            g.rect(R(6.2f, 10, 3.6f, 3.4f), rgb(0x5A4A2A), 0.6f * u);
+            g.rect(R(7.1f, 11.3f, 1.8f, 1.2f), rgb(0xF4C542), 0.3f * u);
+            break;
+        }
         case IcGlyphGamepad:
             g.stroke(R(1, 4.5f, 14, 8), c, 3.5f * u, t * u);
             L(3.6f, 8.5f, 6.6f, 8.5f, t, c);

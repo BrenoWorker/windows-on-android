@@ -77,3 +77,6 @@ local.properties
 *.aab
 .idea/
 *.iml
+
+# UnRAR source fetched by CI
+app/src/main/cpp/third_party/unrar/

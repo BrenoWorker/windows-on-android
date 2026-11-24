@@ -199,6 +199,8 @@ std::string typeName(const Entry& e) {
     if (x == "log") return "Text log";
     if (x == "md") return "Markdown file";
     if (x == "exe") return "Application";
+    if (x == "zip") return "Compressed (zipped) Folder";
+    if (x == "rar") return "WinRAR archive";
     if (x == "lnk") return "Shortcut";
     if (x == "dll") return "Application extension";
     if (x == "msi") return "Windows Installer Package";

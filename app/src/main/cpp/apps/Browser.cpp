@@ -124,6 +124,11 @@ public:
         setLayout(page, clipped, visible);
 
         if (!visible) {
+            double every = st_.loading ? 1.0 : 2.5;
+            if (ui.time - refreshT_ > every && laidOut_ && !lvis_) {
+                refreshT_ = ui.time;
+                web_->action(id_, WebCapture);
+            }
             std::vector<unsigned char> px;
             int w = 0, h = 0;
             if (web_->snapshot(id_, px, w, h) && w > 0 && h > 0) {
@@ -356,6 +361,7 @@ private:
 
     bool fsOn_ = false;
     bool fsMaximized_ = false;
+    double refreshT_ = 0;
 
     void syncFullscreen() {
         if (st_.fullscreen == fsOn_) return;

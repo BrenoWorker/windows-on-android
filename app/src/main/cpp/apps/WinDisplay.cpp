@@ -151,7 +151,8 @@ private:
             pollT_ = now;
             x_.connect(socket_);
         }
-        if (state_ == "ready" && now - frameT_ > 1.0 / 30) {
+        bool front = shell->focused() == this;
+        if (state_ == "ready" && now - frameT_ > (front ? 1.0 / 30 : 1.0 / 10)) {
             frameT_ = now;
             if (frame_.read(fb_, px_)) {
                 if (tex_ && (texW_ != frame_.width || texH_ != frame_.height)) {

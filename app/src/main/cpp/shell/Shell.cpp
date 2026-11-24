@@ -8,6 +8,7 @@
 
 #include <thread>
 
+#include "../core/Archive.h"
 #include "../core/Sound.h"
 
 #include "../apps/Apps.h"
@@ -370,6 +371,12 @@ std::string Shell::dateString() const {
     return buf;
 }
 
+static void placeDialog(Shell& s, AppWindow* w) {
+    Rect wa = s.workArea();
+    w->frame = {wa.x + (wa.w - w->prefW) * 0.5f, wa.y + (wa.h - w->prefH) * 0.4f, w->prefW, w->prefH};
+    w->restore = w->frame;
+}
+
 AppWindow* Shell::open(AppKind k, const std::string& arg) {
     std::unique_ptr<AppWindow> w;
     switch (k) {
@@ -419,6 +426,19 @@ const std::vector<Shortcut>& Shell::programs() {
         progs_ = installedPrograms(*this);
     }
     return progs_;
+}
+
+AppWindow* Shell::extract(const std::string& archive) {
+    auto w = makeExtract(*this, archive);
+    w->shell = this;
+    w->kind = AppKind::Program;
+    w->icon = IcArchive;
+    placeDialog(*this, w.get());
+    AppWindow* raw = w.get();
+    windows_.push_back(std::move(w));
+    focus(raw);
+    closeFlyouts();
+    return raw;
 }
 
 AppWindow* Shell::runWindowsApp(const std::string& exe, const std::string& args) {
@@ -515,17 +535,16 @@ void Shell::openFile(const std::string& path) {
         openProgram(path, isInstalledPath(*this, path));
         return;
     }
+    if (isArchive(path)) {
+        extract(path);
+        return;
+    }
     if (ext == "bmp")
         open(AppKind::Paint, path);
     else
         open(AppKind::Notepad, path);
 }
 
-static void placeDialog(Shell& s, AppWindow* w) {
-    Rect wa = s.workArea();
-    w->frame = {wa.x + (wa.w - w->prefW) * 0.5f, wa.y + (wa.h - w->prefH) * 0.4f, w->prefW, w->prefH};
-    w->restore = w->frame;
-}
 
 void Shell::prompt(const std::string& title, const std::string& message, const std::string& initial,
                    std::function<void(const std::string&)> ok) {
@@ -1104,7 +1123,7 @@ void Shell::refreshDesktop() {
     desk_.push_back({"Recycle Bin", recycleDir(), IcBin, 2});
     std::string dd = fs::join(userDir(), "Desktop");
     for (auto& e : fs::list(dd)) {
-        IconId ic = e.dir ? IcFolder : (fs::extension(e.name) == "bmp" ? IcImage : IcFile);
+        IconId ic = e.dir ? IcFolder : (fs::extension(e.name) == "bmp" ? IcImage : (isArchive(e.name) ? IcArchive : IcFile));
         std::string shown = fs::extension(e.name) == "lnk" ? fs::stem(e.name) : e.name;
         desk_.push_back({shown, fs::join(dd, e.name), ic, 0});
     }
@@ -1208,6 +1227,7 @@ void Shell::drawDesktopIcons(bool cap) {
                                          notifyFs();
                                      });
                                  }});
+                if (isArchive(item.path)) items.push_back({"Extract All...", IcArchive, [this, item]() { extract(item.path); }});
                 items.push_back({"Delete", IcGlyphTrash, [this, item]() { recycle(item.path); }});
             }
             if (item.special == 1)

@@ -1148,6 +1148,9 @@ public class WinDroidActivity extends NativeActivity {
                     case 7:
                         exitFullscreen(b);
                         break;
+                    case 8:
+                        if (b.parked && !b.wantVisible && !b.capturing && b.popup != null && b.popup.isShowing()) capture(b);
+                        break;
                     default:
                         break;
                 }

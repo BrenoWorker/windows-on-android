@@ -23,6 +23,11 @@ jobs:
         with:
           gradle-version: 8.14.3
 
+      - name: Fetch UnRAR source
+        run: |
+          git clone https://github.com/pmachapman/unrar app/src/main/cpp/third_party/unrar
+          git -C app/src/main/cpp/third_party/unrar checkout cacdcb8cbe1813b6151e3f92f2ccec7afe4d6a41
+
       - name: Fetch proot
         run: |
           sudo apt-get install -y patchelf

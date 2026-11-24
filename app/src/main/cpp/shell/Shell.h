@@ -76,7 +76,7 @@ enum PadButton {
     PadThumbR
 };
 
-enum WebAction { WebBack = 0, WebForward, WebReload, WebStop, WebOpenInChrome, WebToggleDesktop, WebToggleControls, WebExitFullscreen };
+enum WebAction { WebBack = 0, WebForward, WebReload, WebStop, WebOpenInChrome, WebToggleDesktop, WebToggleControls, WebExitFullscreen, WebCapture };
 
 struct Platform {
     std::string dataDir;
@@ -169,6 +169,7 @@ public:
     AppWindow* attach(std::unique_ptr<AppWindow> w, AppKind k);
     AppWindow* openProgram(const std::string& exe, bool run, const std::string& args = "");
     AppWindow* runWindowsApp(const std::string& exe, const std::string& args = "");
+    AppWindow* extract(const std::string& archive);
     void drawFileIcon(const std::string& path, IconId fallback, const Rect& r, Color c);
     void openFile(const std::string& path);
     void prompt(const std::string& title, const std::string& message, const std::string& initial,

@@ -90,6 +90,15 @@ window.addEventListener("windroid", (e) => {
 
 Events are dispatched on `window` as `windroid` with `detail.type`: `pause` and `resume` when the window goes to the background or comes back, `fullscreen`, and `button` (with `id` and `down`; the D-pad reports `up`, `down`, `left` and `right`). Controls reset to the default layout when a new page loads.
 
+## ZIP and RAR archives
+
+Open a `.zip` or `.rar` file (or select it in File Explorer and use **Extract all**, or long press it on the desktop) to get the Extract dialog: choose the destination folder, enter a password if the archive is encrypted, and follow the progress. The extracted folder opens when it finishes.
+
+- ZIP is handled natively with zlib (Deflate and Stored, ZIP64, traditional ZipCrypto passwords).
+- RAR uses the official **UnRAR library by RARLAB**, the same API as WinRAR's `unrar.dll` (`RAROpenArchiveEx`, `RARReadHeaderEx`, `RARProcessFileW`). RAR 3 and RAR 5, solid and multi-volume archives, encrypted files and encrypted headers are supported. Archives with unsafe paths or links are refused. The CI fetches the UnRAR source into `app/src/main/cpp/third_party/unrar`; builds without it still extract ZIP.
+
+UnRAR license: UnRAR source code may be used in any software to handle RAR archives without limitations free of charge, but cannot be used to develop RAR (WinRAR) compatible archiver and to re-create RAR compression algorithm, which is proprietary. Distribution of modified UnRAR source code in separate form or as a part of other software is permitted, provided that full text of this paragraph, starting from "UnRAR source code" words, is included in license, or in documentation if license is not available, and in source code comments of resulting package.
+
 ## Downloads
 
 Files downloaded in the Browser go to `C:\Users\User\Downloads`. A downloads button appears in the toolbar with a progress ring, and its flyout lists recent downloads with size, speed and time left, plus cancel, retry, open file and show in folder. Links, `data:` URLs and `blob:` URLs created by web apps (including the `<a download>` name) are supported.
