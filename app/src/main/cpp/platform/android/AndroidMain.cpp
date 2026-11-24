@@ -174,13 +174,13 @@ public:
         env_->DeleteLocalRef(js);
         std::vector<std::string> f;
         size_t p = 0;
-        while (f.size() < 7) {
+        while (f.size() < 9) {
             size_t t = s.find('\t', p);
             if (t == std::string::npos) break;
             f.push_back(s.substr(p, t - p));
             p = t + 1;
         }
-        if (f.size() < 7) return st;
+        if (f.size() < 9) return st;
         f.push_back(s.substr(p));
         st.progress = atoi(f[0].c_str());
         st.canBack = f[1] == "1";
@@ -188,8 +188,10 @@ public:
         st.loading = f[3] == "1";
         st.editable = f[4] == "1";
         st.desktop = f[5] == "1";
-        st.url = f[6];
-        st.title = f[7];
+        st.fullscreen = f[6] == "1";
+        st.controls = f[7] == "1";
+        st.url = f[8];
+        st.title = f[9];
         return st;
     }
     bool snapshot(int id, std::vector<unsigned char>& rgba, int& w, int& h) override {

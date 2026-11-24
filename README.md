@@ -35,6 +35,61 @@
 | ![Start](docs/start.png) | ![Notepad](docs/notepad.png) |
 | ![Terminal](docs/terminal.png) | ![Keyboard](docs/keyboard.png) |
 
+## Browser games
+
+The Browser runs HTML5 games out of the box:
+
+- **Fullscreen**: `element.requestFullscreen()` maximizes the window and hides the toolbar. Back, Esc or the ✕ chip exits.
+- **Touch controls**: the gamepad button in the toolbar (or the chip in fullscreen) shows an on-screen D-pad and buttons. By default they send Arrow keys, Space (A) and Enter (B) to the page as keyboard events.
+- **Keyboard**: with no text field focused, keys typed on the WinDroid keyboard or a physical keyboard reach the game as `keydown`/`keyup`.
+
+### `window.WinDroid` API
+
+Pages can detect WinDroid and integrate with it directly:
+
+```js
+if (window.WinDroid) {
+  const info = JSON.parse(WinDroid.info());
+
+  WinDroid.fullscreen(true);
+  WinDroid.setControls(JSON.stringify({
+    dpad: "wasd",
+    opacity: 0.6,
+    buttons: [
+      { id: "jump", label: "A", key: " " },
+      { id: "fire", label: "B", key: "j" },
+      { id: "pause", label: "II", key: "Escape" }
+    ]
+  }));
+  WinDroid.controls(true);
+
+  WinDroid.save("progress", JSON.stringify({ level: 3 }));
+  const saved = JSON.parse(WinDroid.load("progress") || "null");
+
+  WinDroid.vibrate(40);
+}
+
+window.addEventListener("windroid", (e) => {
+  const d = e.detail;
+  if (d.type === "pause") game.pause();
+  if (d.type === "resume") game.resume();
+  if (d.type === "button") console.log(d.id, d.down);
+  if (d.type === "fullscreen") console.log(d.value);
+});
+```
+
+| Method | Description |
+| --- | --- |
+| `version()` | API version string |
+| `info()` | JSON with platform, device model, Android version, fullscreen and controls state |
+| `fullscreen(on)` / `isFullscreen()` | Enter or leave fullscreen without the Fullscreen API |
+| `controls(show)` / `hasControls()` | Show or hide the on-screen controls |
+| `setControls(json)` | `dpad`: `true`, `false`, `"wasd"` or `{up, down, left, right}` keys; `buttons`: up to 6 `{id, label, key}`; `opacity`: 0.15 to 1 |
+| `vibrate(ms)` | Haptic feedback, up to 2000 ms |
+| `save(key, value)` / `load(key)` / `remove(key)` / `keys()` / `clear()` | Persistent storage scoped to the page origin |
+
+Events are dispatched on `window` as `windroid` with `detail.type`: `pause` and `resume` when the window goes to the background or comes back, `fullscreen`, and `button` (with `id` and `down`; the D-pad reports `up`, `down`, `left` and `right`). Controls reset to the default layout when a new page loads.
+
 ## Project layout
 
 ```

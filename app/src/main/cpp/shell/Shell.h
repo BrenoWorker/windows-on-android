@@ -33,6 +33,8 @@ struct WebState {
     bool loading = false;
     bool editable = false;
     bool desktop = false;
+    bool fullscreen = false;
+    bool controls = false;
     std::string url;
     std::string title;
 };
@@ -51,7 +53,7 @@ public:
     virtual bool snapshot(int id, std::vector<unsigned char>& rgba, int& w, int& h) = 0;
 };
 
-enum WebAction { WebBack = 0, WebForward, WebReload, WebStop, WebOpenInChrome, WebToggleDesktop };
+enum WebAction { WebBack = 0, WebForward, WebReload, WebStop, WebOpenInChrome, WebToggleDesktop, WebToggleControls, WebExitFullscreen };
 
 struct Platform {
     std::string dataDir;

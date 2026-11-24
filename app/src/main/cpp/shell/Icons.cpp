@@ -386,6 +386,13 @@ void drawIcon(Gfx& g, IconId id, const Rect& r, Color c, float battery) {
             L(8, 11, 8, 13.5f, t, c);
             L(5, 13.8f, 11, 13.8f, t, c);
             break;
+        case IcGlyphGamepad:
+            g.stroke(R(1, 4.5f, 14, 8), c, 3.5f * u, t * u);
+            L(3.6f, 8.5f, 6.6f, 8.5f, t, c);
+            L(5.1f, 7, 5.1f, 10, t, c);
+            g.circle(X(10.6f), Y(9.6f), 0.9f * u, c);
+            g.circle(X(12.4f), Y(7.6f), 0.9f * u, c);
+            break;
         case IcGlyphHome:
             L(1.6f, 8, 8, 2, t, c);
             L(8, 2, 14.4f, 8, t, c);

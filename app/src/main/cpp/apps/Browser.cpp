@@ -67,6 +67,10 @@ public:
     bool wantsText() const override { return true; }
 
     bool onBack() override {
+        if (web_ && id_ >= 0 && st_.fullscreen) {
+            web_->action(id_, WebExitFullscreen);
+            return true;
+        }
         if (web_ && id_ >= 0 && st_.canBack) {
             web_->action(id_, WebBack);
             return true;
@@ -87,54 +91,14 @@ public:
         std::string pageTitle = st_.title.empty() ? (st_.url.empty() ? "New tab" : displayUrl(st_.url)) : st_.title;
         title = pageTitle + " - Browser";
 
+        syncFullscreen();
         g.rect(c, th.mica);
-        Rect bar{c.x, c.y, c.w, 46};
-        float x = c.x + 6;
+        Rect bar{c.x, c.y, c.w, fsOn_ ? 0.f : 46.f};
         bool hasWeb = web_ && id_ >= 0;
-        if (toolButton(ui, {x, bar.y + 7, 32, 32}, IcGlyphBack, "", false, false, hasWeb && st_.canBack)) web_->action(id_, WebBack);
-        x += 34;
-        if (toolButton(ui, {x, bar.y + 7, 32, 32}, IcGlyphForward, "", false, false, hasWeb && st_.canForward))
-            web_->action(id_, WebForward);
-        x += 34;
-        if (st_.loading) {
-            if (toolButton(ui, {x, bar.y + 7, 32, 32}, IcGlyphClose, "", false, false, hasWeb)) web_->action(id_, WebStop);
-        } else {
-            if (toolButton(ui, {x, bar.y + 7, 32, 32}, IcGlyphRefresh, "", false, false, hasWeb)) web_->action(id_, WebReload);
-        }
-        x += 34;
-        if (c.w > 520) {
-            if (toolButton(ui, {x, bar.y + 7, 32, 32}, IcGlyphHome, "", false, false, hasWeb)) web_->load(id_, kHome);
-            x += 34;
-        }
-        float right = c.r() - 6;
-        Rect chromeBtn{right - 32, bar.y + 7, 32, 32};
-        right -= 34;
-        Rect deskBtn{right - 32, bar.y + 7, 32, 32};
-        right -= 38;
-        if (toolButton(ui, chromeBtn, IcGlyphExternal, "", false, false, hasWeb)) web_->action(id_, WebOpenInChrome);
-        if (toolButton(ui, deskBtn, IcGlyphMonitor, "", false, st_.desktop, hasWeb)) web_->action(id_, WebToggleDesktop);
-
-        Rect addr{x + 4, bar.y + 7, right - x - 4, 32};
-        if (!addrFocus_) addrEdit_.set(displayUrl(st_.url));
-        bool wasFocus = addrFocus_;
-        bool secure = st_.url.rfind("https://", 0) == 0;
-        if (ui.lineEdit(addr, addrEdit_, addrFocus_, "Search Google or type a URL", 13, 22)) {
-            if (hasWeb) web_->load(id_, normalizeUrl(addrEdit_.text));
-            addrFocus_ = false;
-        }
-        if (!wasFocus && addrFocus_) {
-            addrEdit_.set(st_.url);
-        }
-        if (addrFocus_ && ui.pressed && !addr.contains(ui.x, ui.y)) addrFocus_ = false;
-        drawIcon(g, secure ? IcGlyphLock : IcGlyphGlobe, {addr.x + 9, addr.cy() - 6.5f, 13, 13}, th.textDim);
-
-        g.rect({bar.x, bar.b() - 1, bar.w, 1}, th.border);
-        if (st_.loading && st_.progress < 100) {
-            float p = std::max(0.05f, st_.progress / 100.0f);
-            g.rect({bar.x, bar.b() - 2, bar.w * p, 2}, th.accent);
-        }
+        if (!fsOn_) drawToolbar(ui, bar, hasWeb);
 
         Rect page{c.x, bar.b(), c.w, c.h - bar.h};
+        if (fsOn_) g.rect(page, rgb(0x000000));
         Rect clipped = page.intersect(shell->workArea());
         g.rect(page, rgb(0xFFFFFF));
 
@@ -205,6 +169,73 @@ public:
     }
 
 private:
+    bool fsOn_ = false;
+    bool fsMaximized_ = false;
+
+    void syncFullscreen() {
+        if (st_.fullscreen == fsOn_) return;
+        fsOn_ = st_.fullscreen;
+        if (fsOn_) {
+            addrFocus_ = false;
+            fsMaximized_ = !maximized;
+            if (fsMaximized_) shell->toggleMaximize(this);
+        } else {
+            if (fsMaximized_ && maximized) shell->toggleMaximize(this);
+            fsMaximized_ = false;
+        }
+    }
+
+    void drawToolbar(Ui& ui, const Rect& bar, bool hasWeb) {
+        Gfx& g = *ui.g;
+        const Theme& th = *ui.th;
+        float x = bar.x + 6;
+        if (toolButton(ui, {x, bar.y + 7, 32, 32}, IcGlyphBack, "", false, false, hasWeb && st_.canBack)) web_->action(id_, WebBack);
+        x += 34;
+        if (toolButton(ui, {x, bar.y + 7, 32, 32}, IcGlyphForward, "", false, false, hasWeb && st_.canForward))
+            web_->action(id_, WebForward);
+        x += 34;
+        if (st_.loading) {
+            if (toolButton(ui, {x, bar.y + 7, 32, 32}, IcGlyphClose, "", false, false, hasWeb)) web_->action(id_, WebStop);
+        } else {
+            if (toolButton(ui, {x, bar.y + 7, 32, 32}, IcGlyphRefresh, "", false, false, hasWeb)) web_->action(id_, WebReload);
+        }
+        x += 34;
+        if (bar.w > 520) {
+            if (toolButton(ui, {x, bar.y + 7, 32, 32}, IcGlyphHome, "", false, false, hasWeb)) web_->load(id_, kHome);
+            x += 34;
+        }
+        float right = bar.r() - 6;
+        Rect chromeBtn{right - 32, bar.y + 7, 32, 32};
+        right -= 34;
+        Rect deskBtn{right - 32, bar.y + 7, 32, 32};
+        right -= 34;
+        Rect padBtn{right - 32, bar.y + 7, 32, 32};
+        right -= 38;
+        if (toolButton(ui, chromeBtn, IcGlyphExternal, "", false, false, hasWeb)) web_->action(id_, WebOpenInChrome);
+        if (toolButton(ui, deskBtn, IcGlyphMonitor, "", false, st_.desktop, hasWeb)) web_->action(id_, WebToggleDesktop);
+        if (toolButton(ui, padBtn, IcGlyphGamepad, "", false, st_.controls, hasWeb)) web_->action(id_, WebToggleControls);
+
+        Rect addr{x + 4, bar.y + 7, right - x - 4, 32};
+        if (!addrFocus_) addrEdit_.set(displayUrl(st_.url));
+        bool wasFocus = addrFocus_;
+        bool secure = st_.url.rfind("https://", 0) == 0;
+        if (ui.lineEdit(addr, addrEdit_, addrFocus_, "Search Google or type a URL", 13, 22)) {
+            if (hasWeb) web_->load(id_, normalizeUrl(addrEdit_.text));
+            addrFocus_ = false;
+        }
+        if (!wasFocus && addrFocus_) {
+            addrEdit_.set(st_.url);
+        }
+        if (addrFocus_ && ui.pressed && !addr.contains(ui.x, ui.y)) addrFocus_ = false;
+        drawIcon(g, secure ? IcGlyphLock : IcGlyphGlobe, {addr.x + 9, addr.cy() - 6.5f, 13, 13}, th.textDim);
+
+        g.rect({bar.x, bar.b() - 1, bar.w, 1}, th.border);
+        if (st_.loading && st_.progress < 100) {
+            float p = std::max(0.05f, st_.progress / 100.0f);
+            g.rect({bar.x, bar.b() - 2, bar.w * p, 2}, th.accent);
+        }
+    }
+
     std::shared_ptr<WebBridge> web_;
     std::string start_;
     int id_ = -1;

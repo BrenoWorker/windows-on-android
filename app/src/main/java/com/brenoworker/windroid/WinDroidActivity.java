@@ -2,13 +2,17 @@ package com.brenoworker.windroid;
 
 import android.annotation.SuppressLint;
 import android.app.NativeActivity;
+import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
 import android.view.Display;
 import android.view.DisplayCutout;
 import android.view.PixelCopy;
@@ -29,6 +33,7 @@ import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
 import android.widget.PopupWindow;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.nio.charset.StandardCharsets;
@@ -42,6 +47,25 @@ public class WinDroidActivity extends NativeActivity {
 
     private static final String HOOK = "(function(){"
             + "if(window.__wd)return;window.__wd=1;"
+            + "var KC={ArrowLeft:37,ArrowUp:38,ArrowRight:39,ArrowDown:40,Enter:13,' ':32,Escape:27,Backspace:8,Tab:9,Delete:46,Home:36,End:35,Shift:16,Control:17,Alt:18};"
+            + "var kcode=function(k){if(k==' ')return 'Space';if(k.length==1){var c=k.toUpperCase();"
+            + "if(c>='A'&&c<='Z')return 'Key'+c;if(c>='0'&&c<='9')return 'Digit'+c;}return k;};"
+            + "var knum=function(k){if(KC[k])return KC[k];if(k.length==1)return k.toUpperCase().charCodeAt(0);return 0;};"
+            + "var ktgt=function(){var a=document.activeElement;if(a&&a!==document.body&&a!==document.documentElement)return a;"
+            + "var f=document.fullscreenElement||document.webkitFullscreenElement;"
+            + "var c=(f&&f.tagName=='CANVAS')?f:((f&&f.querySelector&&f.querySelector('canvas'))||document.querySelector('canvas'));"
+            + "return c||document.body||document;};"
+            + "var kev=function(t,type,k){var n=knum(k);var cc=type=='keypress'?(k.length==1?k.charCodeAt(0):n):0;"
+            + "var e=new KeyboardEvent(type,{key:k,code:kcode(k),keyCode:n,which:n,charCode:cc,bubbles:true,cancelable:true,composed:true});"
+            + "try{Object.defineProperty(e,'keyCode',{get:function(){return n;}});Object.defineProperty(e,'which',{get:function(){return type=='keypress'?cc:n;}});"
+            + "Object.defineProperty(e,'charCode',{get:function(){return cc;}});}catch(x){}"
+            + "return t.dispatchEvent(e);};"
+            + "var held={};"
+            + "window.__wdPad=function(k,d){var t=ktgt();if(d){held[k]=1;var ok=kev(t,'keydown',k);"
+            + "if(ok&&(k.length==1||k=='Enter'))kev(t,'keypress',k);return ok;}"
+            + "if(!held[k])return true;delete held[k];return kev(t,'keyup',k);};"
+            + "window.__wdTap=function(k){var ok=window.__wdPad(k,true);window.__wdPad(k,false);return ok;};"
+            + "window.__wdEmit=function(d){try{window.dispatchEvent(new CustomEvent('windroid',{detail:d}));}catch(x){}};"
             + "var ed=function(e){if(!e)return false;if(e.isContentEditable)return true;"
             + "var t=(e.tagName||'').toUpperCase();if(t=='TEXTAREA')return !e.readOnly&&!e.disabled;"
             + "if(t!='INPUT')return false;"
@@ -60,9 +84,9 @@ public class WinDroidActivity extends NativeActivity {
             + "var setsel=function(e,p){try{e.setSelectionRange(p,p);}catch(x){}};"
             + "var ins=function(e,t){if(e.isContentEditable){document.execCommand('insertText',false,t);return;}"
             + "var r=sel(e);setv(e,e.value.slice(0,r[0])+t+e.value.slice(r[1]));setsel(e,r[0]+t.length);};"
-            + "window.__wdInsert=function(t){var e=tg();if(!e)return;if(document.activeElement!==e){try{e.focus();}catch(x){}}ins(e,t);};"
+            + "window.__wdInsert=function(t){var e=tg();if(!e){for(var i=0;i<t.length;i++)window.__wdTap(t.charAt(i));return;}if(document.activeElement!==e){try{e.focus();}catch(x){}}ins(e,t);};"
             + "window.__wdKey=function(k){var e=tg();"
-            + "if(!e){if(k=='ArrowDown')window.scrollBy(0,80);if(k=='ArrowUp')window.scrollBy(0,-80);"
+            + "if(!e){if(!window.__wdTap(k))return;if(k=='ArrowDown')window.scrollBy(0,80);if(k=='ArrowUp')window.scrollBy(0,-80);"
             + "if(k=='Home')window.scrollTo(0,0);if(k=='End')window.scrollTo(0,document.body.scrollHeight);return;}"
             + "if(document.activeElement!==e){try{e.focus();}catch(x){}}"
             + "var ok=e.dispatchEvent(new KeyboardEvent('keydown',{key:k,code:k,bubbles:true,cancelable:true}));"
@@ -119,6 +143,13 @@ public class WinDroidActivity extends NativeActivity {
         int parkW;
         int parkH;
         int captureSeq;
+        GamePad pad;
+        View custom;
+        WebChromeClient.CustomViewCallback customCallback;
+        volatile boolean apiFullscreen;
+        volatile boolean controls;
+        volatile boolean fullscreen;
+        boolean shown;
 
         Browser(int id) {
             this.id = id;
@@ -144,6 +175,198 @@ public class WinDroidActivity extends NativeActivity {
         public void focus(boolean editable) {
             browser.editable = editable;
         }
+
+        @JavascriptInterface
+        public String version() {
+            return API_VERSION;
+        }
+
+        @JavascriptInterface
+        public String info() {
+            try {
+                JSONObject o = new JSONObject();
+                o.put("platform", "WinDroid");
+                o.put("version", API_VERSION);
+                o.put("model", Build.MODEL);
+                o.put("manufacturer", Build.MANUFACTURER);
+                o.put("android", Build.VERSION.RELEASE);
+                o.put("sdk", Build.VERSION.SDK_INT);
+                o.put("touch", true);
+                o.put("fullscreen", browser.fullscreen);
+                o.put("controls", browser.controls);
+                return o.toString();
+            } catch (Exception e) {
+                return "{}";
+            }
+        }
+
+        @JavascriptInterface
+        public void fullscreen(final boolean on) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (on) {
+                        browser.apiFullscreen = true;
+                        refreshGame(browser);
+                    } else {
+                        exitFullscreen(browser);
+                    }
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public boolean isFullscreen() {
+            return browser.fullscreen;
+        }
+
+        @JavascriptInterface
+        public void controls(final boolean show) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    browser.controls = show;
+                    refreshGame(browser);
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public boolean hasControls() {
+            return browser.controls;
+        }
+
+        @JavascriptInterface
+        public void setControls(final String json) {
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    if (browser.pad != null) browser.pad.configure(json);
+                }
+            });
+        }
+
+        @JavascriptInterface
+        public void vibrate(int ms) {
+            vibrateFor(Math.max(1, Math.min(ms, 2000)));
+        }
+
+        @JavascriptInterface
+        public void save(String key, String value) {
+            String k = storageKey(browser, key);
+            if (k == null) return;
+            if (value == null) storage().edit().remove(k).apply();
+            else storage().edit().putString(k, value).apply();
+        }
+
+        @JavascriptInterface
+        public String load(String key) {
+            String k = storageKey(browser, key);
+            return k == null ? null : storage().getString(k, null);
+        }
+
+        @JavascriptInterface
+        public void remove(String key) {
+            String k = storageKey(browser, key);
+            if (k != null) storage().edit().remove(k).apply();
+        }
+
+        @JavascriptInterface
+        public String keys() {
+            String prefix = storageKey(browser, "");
+            JSONArray out = new JSONArray();
+            if (prefix == null) return out.toString();
+            for (String k : storage().getAll().keySet())
+                if (k.startsWith(prefix)) out.put(k.substring(prefix.length()));
+            return out.toString();
+        }
+
+        @JavascriptInterface
+        public void clear() {
+            String prefix = storageKey(browser, "");
+            if (prefix == null) return;
+            SharedPreferences.Editor ed = storage().edit();
+            for (String k : storage().getAll().keySet())
+                if (k.startsWith(prefix)) ed.remove(k);
+            ed.apply();
+        }
+    }
+
+    private static final String API_VERSION = "1.0";
+
+    private SharedPreferences storage() {
+        return getSharedPreferences("windroid_games", Context.MODE_PRIVATE);
+    }
+
+    private static String storageKey(Browser b, String key) {
+        if (key == null) return null;
+        String url = b.url == null ? "" : b.url;
+        Uri u = Uri.parse(url);
+        String scheme = u.getScheme();
+        String host = u.getHost();
+        if (scheme == null) return null;
+        String origin = scheme + "://" + (host == null ? "" : host) + (u.getPort() > 0 ? ":" + u.getPort() : "");
+        return origin + "\n" + key;
+    }
+
+    private void vibrateFor(int ms) {
+        try {
+            Vibrator v = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
+            if (v == null || !v.hasVibrator()) return;
+            if (Build.VERSION.SDK_INT >= 26) v.vibrate(VibrationEffect.createOneShot(ms, VibrationEffect.DEFAULT_AMPLITUDE));
+            else v.vibrate(ms);
+        } catch (Throwable ignored) {
+        }
+    }
+
+    private void emit(Browser b, String detail) {
+        if (b.web == null) return;
+        b.web.evaluateJavascript(HOOK + ";window.__wdEmit(" + detail + ")", null);
+    }
+
+    private void refreshGame(Browser b) {
+        boolean fs = b.custom != null || b.apiFullscreen;
+        boolean changed = fs != b.fullscreen;
+        b.fullscreen = fs;
+        if (b.pad != null) b.pad.setState(b.controls, fs);
+        if (changed) emit(b, "{type:'fullscreen',value:" + fs + "}");
+    }
+
+    private void exitFullscreen(Browser b) {
+        b.apiFullscreen = false;
+        if (b.custom != null) {
+            if (b.web != null) b.web.evaluateJavascript("(function(){var d=document;if(d.exitFullscreen&&d.fullscreenElement)d.exitFullscreen();"
+                    + "else if(d.webkitExitFullscreen)d.webkitExitFullscreen();})()", null);
+            final Browser fb = b;
+            getWindow().getDecorView().postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (fb.custom != null) hideCustom(fb);
+                }
+            }, 250);
+        }
+        refreshGame(b);
+    }
+
+    private void hideCustom(Browser b) {
+        View v = b.custom;
+        WebChromeClient.CustomViewCallback cb = b.customCallback;
+        b.custom = null;
+        b.customCallback = null;
+        if (v != null && b.frame != null) b.frame.removeView(v);
+        if (b.web != null) b.web.setVisibility(View.VISIBLE);
+        if (cb != null) {
+            try {
+                cb.onCustomViewHidden();
+            } catch (Throwable ignored) {
+            }
+        }
+        refreshGame(b);
+    }
+
+    private void padKey(Browser b, String key, boolean down) {
+        if (b.web == null) return;
+        b.web.evaluateJavascript(HOOK + ";window.__wdPad(" + JSONObject.quote(key) + "," + down + ")", null);
     }
 
     @Override
@@ -350,6 +573,11 @@ public class WinDroidActivity extends NativeActivity {
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 b.url = url == null ? "" : url;
+                if (b.apiFullscreen) {
+                    b.apiFullscreen = false;
+                    refreshGame(b);
+                }
+                if (b.pad != null) b.pad.configure(null);
                 b.loading = true;
                 b.editable = false;
                 b.sync();
@@ -381,10 +609,53 @@ public class WinDroidActivity extends NativeActivity {
             public void onReceivedTitle(WebView view, String title) {
                 b.title = title == null ? "" : title;
             }
+
+            @Override
+            public void onShowCustomView(View view, CustomViewCallback callback) {
+                if (b.frame == null) {
+                    callback.onCustomViewHidden();
+                    return;
+                }
+                if (b.custom != null) hideCustom(b);
+                b.custom = view;
+                b.customCallback = callback;
+                view.setBackgroundColor(Color.BLACK);
+                b.frame.addView(view, 1, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+                refreshGame(b);
+            }
+
+            @Override
+            public void onHideCustomView() {
+                if (b.custom != null) hideCustom(b);
+            }
         });
         FrameLayout frame = new FrameLayout(this);
         frame.setBackgroundColor(Color.WHITE);
         frame.addView(web, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        GamePad pad = new GamePad(this, new GamePad.Listener() {
+            @Override
+            public void onKey(String key, boolean down) {
+                padKey(b, key, down);
+            }
+
+            @Override
+            public void onButton(String id, boolean down) {
+                emit(b, "{type:'button',id:" + JSONObject.quote(id) + ",down:" + down + "}");
+            }
+
+            @Override
+            public void onToggleControls() {
+                b.controls = !b.controls;
+                refreshGame(b);
+            }
+
+            @Override
+            public void onExitFullscreen() {
+                exitFullscreen(b);
+            }
+        });
+        frame.addView(pad, new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        b.pad = pad;
         PopupWindow popup = new PopupWindow(frame, 1, 1, false);
         popup.setTouchable(true);
         popup.setOutsideTouchable(false);
@@ -397,6 +668,7 @@ public class WinDroidActivity extends NativeActivity {
     }
 
     private void release(Browser b) {
+        if (b.custom != null) hideCustom(b);
         if (b.popup != null && b.popup.isShowing()) b.popup.dismiss();
         if (b.web != null) {
             b.web.stopLoading();
@@ -426,6 +698,11 @@ public class WinDroidActivity extends NativeActivity {
             public void run() {
                 if (b.popup == null || isFinishing()) return;
                 b.wantVisible = visible;
+                if (visible != b.shown) {
+                    b.shown = visible;
+                    if (!visible && b.pad != null) b.pad.releaseAll();
+                    emit(b, visible ? "{type:'resume'}" : "{type:'pause'}");
+                }
                 if (visible) {
                     b.px = x;
                     b.py = y;
@@ -612,6 +889,13 @@ public class WinDroidActivity extends NativeActivity {
                     case 5:
                         toggleDesktop(b);
                         break;
+                    case 6:
+                        b.controls = !b.controls;
+                        refreshGame(b);
+                        break;
+                    case 7:
+                        exitFullscreen(b);
+                        break;
                     default:
                         break;
                 }
@@ -701,6 +985,7 @@ public class WinDroidActivity extends NativeActivity {
         String title = b.title == null ? "" : b.title.replace('\t', ' ').replace('\n', ' ');
         String url = b.url == null ? "" : b.url.replace('\t', ' ');
         return b.progress + "\t" + (b.canBack ? 1 : 0) + "\t" + (b.canForward ? 1 : 0) + "\t" + (b.loading ? 1 : 0)
-                + "\t" + (b.editable ? 1 : 0) + "\t" + (b.desktop ? 1 : 0) + "\t" + url + "\t" + title;
+                + "\t" + (b.editable ? 1 : 0) + "\t" + (b.desktop ? 1 : 0) + "\t" + (b.fullscreen ? 1 : 0)
+                + "\t" + (b.controls ? 1 : 0) + "\t" + url + "\t" + title;
     }
 }
