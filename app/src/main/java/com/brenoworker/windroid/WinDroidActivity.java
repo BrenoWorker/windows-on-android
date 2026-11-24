@@ -114,6 +114,11 @@ public class WinDroidActivity extends NativeActivity {
         int py;
         int pw = 1;
         int ph = 1;
+        int hw = 1;
+        int hh = 1;
+        int parkW;
+        int parkH;
+        int captureSeq;
 
         Browser(int id) {
             this.id = id;
@@ -356,6 +361,7 @@ public class WinDroidActivity extends NativeActivity {
                 b.progress = 100;
                 b.sync();
                 view.evaluateJavascript(HOOK, null);
+                if (b.parked && !b.wantVisible) scheduleCapture(b, 450);
             }
 
             @Override
@@ -435,18 +441,63 @@ public class WinDroidActivity extends NativeActivity {
                         b.popup.update(x, y, w, h);
                     }
                     b.parked = false;
-                } else if (b.popup.isShowing() && !b.parked && !b.capturing) {
-                    capture(b);
+                } else {
+                    b.hw = Math.max(1, w);
+                    b.hh = Math.max(1, h);
+                    if (!b.popup.isShowing()) {
+                        View anchor = getWindow().getDecorView();
+                        if (anchor.getWindowToken() == null) return;
+                        b.popup.setWidth(b.hw);
+                        b.popup.setHeight(b.hh);
+                        b.popup.showAtLocation(anchor, Gravity.TOP | Gravity.START, PARK, PARK);
+                        b.parked = true;
+                        b.parkW = b.hw;
+                        b.parkH = b.hh;
+                        scheduleCapture(b, 700);
+                    } else if (b.parked) {
+                        if (b.parkW == b.hw && b.parkH == b.hh) return;
+                        b.popup.update(PARK, PARK, b.hw, b.hh);
+                        b.parkW = b.hw;
+                        b.parkH = b.hh;
+                        scheduleCapture(b, 400);
+                    } else if (!b.capturing) {
+                        capture(b);
+                    }
                 }
             }
         });
     }
 
+    private static final int PARK = -30000;
+
     private void park(Browser b) {
         b.capturing = false;
         if (b.popup == null || !b.popup.isShowing() || b.wantVisible) return;
-        b.popup.update(-30000, -30000, b.pw, b.ph);
+        int w = b.hw > 1 ? b.hw : b.pw;
+        int h = b.hh > 1 ? b.hh : b.ph;
+        boolean resized = !b.parked || w != b.parkW || h != b.parkH;
+        b.popup.update(PARK, PARK, w, h);
         b.parked = true;
+        b.parkW = w;
+        b.parkH = h;
+        if (resized) scheduleCapture(b, 400);
+    }
+
+    private void scheduleCapture(final Browser b, long delay) {
+        final int seq = ++b.captureSeq;
+        View anchor = getWindow().getDecorView();
+        anchor.postDelayed(new Runnable() {
+            @Override
+            public void run() {
+                if (seq != b.captureSeq || isFinishing()) return;
+                if (b.popup == null || !b.popup.isShowing() || !b.parked || b.wantVisible) return;
+                if (b.capturing) {
+                    scheduleCapture(b, 200);
+                    return;
+                }
+                capture(b);
+            }
+        }, delay);
     }
 
     private void capture(final Browser b) {

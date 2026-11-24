@@ -74,7 +74,7 @@ public:
         return false;
     }
 
-    void hidden() override { setLayout({0, 0, 0, 0}, false); }
+    void hidden() override { setLayout({0, 0, 0, 0}, {0, 0, 0, 0}, false); }
 
     void draw(Ui& ui, const Rect& c) override {
         Gfx& g = *ui.g;
@@ -148,7 +148,7 @@ public:
         }
 
         bool visible = exclusive && clipped.w > 8 && clipped.h > 8;
-        setLayout(clipped, visible);
+        setLayout(page, clipped, visible);
 
         if (!visible) {
             std::vector<unsigned char> px;
@@ -164,13 +164,29 @@ public:
                     g.updateTexture(tex_, w, h, px.data());
                 texW_ = w;
                 texH_ = h;
-            }
-            if (tex_) {
                 float s = g.scale();
-                g.image(tex_, {clipped.x, clipped.y, texW_ / s, texH_ / s});
-            } else {
-                g.textIn(page, 13, "Loading\xE2\x80\xA6", rgb(0x777777), AlignCenter);
+                if (pendingClip_ && w == lw_ && h == lh_) {
+                    snapW_ = visPage_.w;
+                    snapH_ = visPage_.h;
+                    snapX_ = visClip_.x - visPage_.x;
+                    snapY_ = visClip_.y - visPage_.y;
+                } else {
+                    snapW_ = w / s;
+                    snapH_ = h / s;
+                    snapX_ = 0;
+                    snapY_ = 0;
+                }
+                pendingClip_ = false;
             }
+            g.pushClip(page);
+            if (tex_ && snapW_ > 0 && snapH_ > 0) {
+                float s = g.scale();
+                float k = std::max(page.w / snapW_, page.h / snapH_);
+                g.image(tex_, {page.x + snapX_ * k, page.y + snapY_ * k, texW_ / s * k, texH_ / s * k});
+            } else {
+                drawPlaceholder(g, th, page);
+            }
+            g.popClip();
         }
 
         if (st_.editable && !lastEditable_) {
@@ -199,31 +215,85 @@ private:
     GLuint tex_ = 0;
     int texW_ = 0, texH_ = 0;
     int lx_ = -1, ly_ = -1, lw_ = -1, lh_ = -1;
+    int hw_ = 0, hh_ = 0;
     bool lvis_ = false;
     bool laidOut_ = false;
+    bool pendingClip_ = false;
+    Rect visPage_, visClip_;
+    float snapX_ = 0, snapY_ = 0, snapW_ = 0, snapH_ = 0;
 
-    void setLayout(const Rect& r, bool visible) {
+    void drawPlaceholder(Gfx& g, const Theme& th, const Rect& page) {
+        g.rect(page, rgb(0xFFFFFF));
+        Color bar = rgb(0xEDEDED);
+        Color soft = rgb(0xF5F5F5);
+        float pad = std::min(32.f, page.w * 0.05f);
+        Rect head{page.x, page.y, page.w, std::min(56.f, page.h * 0.12f)};
+        g.rect(head, rgb(0xFAFAFA));
+        g.rect({head.x, head.b() - 1, head.w, 1}, rgb(0xE6E6E6));
+        drawIcon(g, IcGlyphGlobe, {head.x + pad, head.cy() - 8, 16, 16}, rgb(0x9A9A9A));
+        std::string host = st_.url.empty() ? "New tab" : displayUrl(st_.url);
+        g.textIn({head.x + pad + 26, head.y, head.w - pad * 2 - 26, head.h}, 13, g.ellipsize(13, host, head.w - pad * 2 - 26),
+                 rgb(0x707070));
+        float y = head.b() + pad;
+        float cw = page.w - pad * 2;
+        std::string heading = st_.title.empty() ? host : st_.title;
+        if (y + 30 < page.b()) {
+            g.textIn({page.x + pad, y, cw, 30}, 20, g.ellipsize(20, heading, cw), rgb(0x2A2A2A));
+            y += 44;
+        }
+        if (page.w > 560 && y + 140 < page.b()) {
+            g.rect({page.x + pad, y, cw, std::min(180.f, (page.b() - y) * 0.4f)}, soft, 8);
+            y += std::min(180.f, (page.b() - y) * 0.4f) + pad;
+        }
+        static const float widths[] = {0.92f, 0.86f, 0.95f, 0.6f, 0.0f, 0.9f, 0.82f, 0.94f, 0.7f, 0.0f};
+        int i = 0;
+        while (y + 12 < page.b() - pad * 0.5f) {
+            float f = widths[i % 10];
+            if (f > 0) g.rect({page.x + pad, y, cw * f, 12}, bar, 6);
+            y += f > 0 ? 24 : 18;
+            i++;
+        }
+        if (st_.loading && st_.progress < 100) {
+            float p = std::max(0.05f, st_.progress / 100.0f);
+            g.rect({page.x, page.y, page.w * p, 2}, th.accent);
+        }
+    }
+
+    void setLayout(const Rect& page, const Rect& r, bool visible) {
         if (!web_ || id_ < 0) return;
         float s = shell->gfx().scale();
-        int x = (int)std::lround(r.x * s), y = (int)std::lround(r.y * s);
-        int w = (int)std::lround(r.w * s), h = (int)std::lround(r.h * s);
-        if (!visible) {
-            if (laidOut_ && !lvis_) return;
-            x = lx_;
-            y = ly_;
-            w = lw_;
-            h = lh_;
-        }
-        if (laidOut_ && visible == lvis_ && x == lx_ && y == ly_ && w == lw_ && h == lh_) return;
-        laidOut_ = true;
-        lvis_ = visible;
         if (visible) {
+            int x = (int)std::lround(r.x * s), y = (int)std::lround(r.y * s);
+            int w = std::max(1, (int)std::lround(r.w * s)), h = std::max(1, (int)std::lround(r.h * s));
+            visPage_ = page;
+            visClip_ = r;
+            if (laidOut_ && lvis_ && x == lx_ && y == ly_ && w == lw_ && h == lh_) return;
+            laidOut_ = true;
+            lvis_ = true;
             lx_ = x;
             ly_ = y;
             lw_ = w;
             lh_ = h;
+            web_->layout(id_, x, y, w, h, true);
+            return;
         }
-        web_->layout(id_, x, y, std::max(1, w), std::max(1, h), visible);
+        int w = hw_, h = hh_;
+        if (page.w >= 8 && page.h >= 8) {
+            w = (int)std::lround(page.w * s);
+            h = (int)std::lround(page.h * s);
+        }
+        if (w <= 0 || h <= 0) {
+            if (!laidOut_) return;
+            w = std::max(1, lw_);
+            h = std::max(1, lh_);
+        }
+        if (laidOut_ && !lvis_ && w == hw_ && h == hh_) return;
+        if (lvis_) pendingClip_ = true;
+        laidOut_ = true;
+        lvis_ = false;
+        hw_ = w;
+        hh_ = h;
+        web_->layout(id_, lx_, ly_, w, h, false);
     }
 };
 
