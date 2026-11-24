@@ -115,6 +115,8 @@ public class WinDroidActivity extends NativeActivity {
     private volatile int insetRight;
     private volatile int insetBottom;
     private WebView spare;
+    private BluetoothHub bluetooth;
+    private WinRuntime winRuntime;
 
     private final class Browser {
         final int id;
@@ -400,6 +402,9 @@ public class WinDroidActivity extends NativeActivity {
         }
         immersive();
         preferHighRefreshRate();
+        bluetooth = new BluetoothHub(this);
+        winRuntime = new WinRuntime(this);
+        bluetooth.start();
         decor.postDelayed(new Runnable() {
             @Override
             public void run() {
@@ -452,7 +457,162 @@ public class WinDroidActivity extends NativeActivity {
     }
 
     @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (bluetooth != null) bluetooth.onPermissionResult();
+    }
+
+    private static String text(byte[] b) {
+        return b == null ? "" : new String(b, StandardCharsets.UTF_8);
+    }
+
+    private void ui(Runnable r) {
+        runOnUiThread(r);
+    }
+
+    public byte[] sys(byte[] cmdBytes, byte[] argBytes) {
+        final String cmd = text(cmdBytes);
+        final String arg = text(argBytes);
+        String out = "";
+        try {
+            out = dispatch(cmd, arg);
+        } catch (Throwable t) {
+            out = "";
+        }
+        return (out == null ? "" : out).getBytes(StandardCharsets.UTF_8);
+    }
+
+    private String dispatch(String cmd, final String arg) {
+        final BluetoothHub bt = bluetooth;
+        final WinRuntime rt = winRuntime;
+        if (bt == null || rt == null) return "";
+        switch (cmd) {
+            case "bt.state":
+                return bt.state();
+            case "bt.devices":
+                return bt.devices();
+            case "bt.permission":
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        bt.requestPermission();
+                    }
+                });
+                return "";
+            case "bt.enable":
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        bt.setEnabled(arg.equals("1"));
+                    }
+                });
+                return "";
+            case "bt.scan":
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        bt.scan(arg.equals("1"));
+                    }
+                });
+                return "";
+            case "bt.pair":
+                bt.pair(arg);
+                return "";
+            case "bt.unpair":
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        bt.unpair(arg);
+                    }
+                });
+                return "";
+            case "bt.rename":
+                bt.rename(arg);
+                return "";
+            case "bt.settings":
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        bt.openSystemSettings();
+                    }
+                });
+                return "";
+            case "bt.send": {
+                final String[] result = {""};
+                final java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+                ui(new Runnable() {
+                    @Override
+                    public void run() {
+                        result[0] = bt.send(new java.io.File(arg));
+                        latch.countDown();
+                    }
+                });
+                try {
+                    latch.await(3, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException ignored) {
+                }
+                return result[0];
+            }
+            case "rt.status":
+                return rt.status();
+            case "rt.install":
+                rt.install(arg);
+                return "";
+            case "rt.cancel":
+                rt.cancelInstall();
+                return "";
+            case "rt.remove":
+                rt.remove();
+                return "";
+            case "rt.reset":
+                rt.resetPrefix();
+                return "";
+            case "exe.run": {
+                int tab = arg.indexOf('\t');
+                String exe = tab < 0 ? arg : arg.substring(0, tab);
+                String args = tab < 0 ? "" : arg.substring(tab + 1);
+                return String.valueOf(rt.run(exe, args));
+            }
+            case "exe.poll":
+                return rt.poll(parseInt(arg));
+            case "exe.write": {
+                int tab = arg.indexOf('\t');
+                if (tab > 0) rt.write(parseInt(arg.substring(0, tab)), arg.substring(tab + 1));
+                return "";
+            }
+            case "exe.kill":
+                rt.kill(parseInt(arg));
+                return "";
+            default:
+                return "";
+        }
+    }
+
+    private static int parseInt(String s) {
+        try {
+            return Integer.parseInt(s.trim());
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    public void webGamepad(final int id, final int button, final boolean down) {
+        final Browser b = browsers.get(id);
+        if (b == null) return;
+        runOnUiThread(new Runnable() {
+            @Override
+            public void run() {
+                if (b.pad == null) return;
+                String key = b.pad.gamepadKey(button);
+                if (key != null && !key.isEmpty()) padKey(b, key, down);
+                emit(b, "{type:'button',id:" + JSONObject.quote(b.pad.gamepadId(button)) + ",down:" + down + ",source:'gamepad'}");
+            }
+        });
+    }
+
+    @Override
     protected void onDestroy() {
+        if (bluetooth != null) bluetooth.stop();
         for (Browser b : browsers.values()) release(b);
         browsers.clear();
         if (spare != null) {

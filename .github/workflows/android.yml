@@ -23,6 +23,28 @@ jobs:
         with:
           gradle-version: 8.14.3
 
+      - name: Cache Box64
+        id: box64-cache
+        uses: actions/cache@v4
+        with:
+          path: app/src/main/jniLibs/arm64-v8a/libbox64.so
+          key: box64-v0.4.4-android31-r1
+
+      - name: Build Box64
+        if: steps.box64-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        run: |
+          git clone --depth 1 --branch v0.4.4 https://github.com/ptitSeb/box64 "$RUNNER_TEMP/box64"
+          BIN="$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          cmake -S "$RUNNER_TEMP/box64" -B "$RUNNER_TEMP/box64/build" \
+            -DCMAKE_C_COMPILER="$BIN/aarch64-linux-android31-clang" \
+            -DANDROID=1 -DARM_DYNAREC=1 -DBAD_SIGNAL=1 \
+            -DCMAKE_BUILD_TYPE=Release -DCI=False
+          cmake --build "$RUNNER_TEMP/box64/build" -j"$(nproc)"
+          mkdir -p app/src/main/jniLibs/arm64-v8a
+          cp "$RUNNER_TEMP/box64/build/box64" app/src/main/jniLibs/arm64-v8a/libbox64.so
+          "$BIN/llvm-strip" app/src/main/jniLibs/arm64-v8a/libbox64.so
+
       - name: Build APK
         run: gradle assembleRelease --no-daemon --stacktrace
 

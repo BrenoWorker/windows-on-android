@@ -198,6 +198,10 @@ std::string typeName(const Entry& e) {
     if (x == "ini" || x == "cfg") return "Configuration settings";
     if (x == "log") return "Text log";
     if (x == "md") return "Markdown file";
+    if (x == "exe") return "Application";
+    if (x == "lnk") return "Shortcut";
+    if (x == "dll") return "Application extension";
+    if (x == "msi") return "Windows Installer Package";
     if (x.empty()) return "File";
     std::string u = x;
     for (auto& c : u) c = (char)toupper((unsigned char)c);

@@ -78,6 +78,13 @@ public:
         return false;
     }
 
+    bool gamepad(int button, bool down) override {
+        if (!web_ || id_ < 0 || addrFocus_) return false;
+        if (button == PadB && !st_.fullscreen && !st_.controls) return false;
+        web_->gamepad(id_, button, down);
+        return true;
+    }
+
     void hidden() override { setLayout({0, 0, 0, 0}, {0, 0, 0, 0}, false); }
 
     void draw(Ui& ui, const Rect& c) override {

@@ -90,6 +90,23 @@ window.addEventListener("windroid", (e) => {
 
 Events are dispatched on `window` as `windroid` with `detail.type`: `pause` and `resume` when the window goes to the background or comes back, `fullscreen`, and `button` (with `id` and `down`; the D-pad reports `up`, `down`, `left` and `right`). Controls reset to the default layout when a new page loads.
 
+## Bluetooth & devices
+
+Settings > Bluetooth & devices uses the real Android Bluetooth stack: turn Bluetooth on or off, see paired devices with their type, connection state and battery, search for nearby devices, pair, remove and rename. The Bluetooth tile in Quick Settings shows the real state (long press it to open the page). In File Explorer, select a file and use **Send** to share it over Bluetooth.
+
+Game controllers work everywhere: the D-pad and A/B/X/Y/L1/Start navigate WinDroid, and in the Browser they are forwarded to the page with the same key mapping as the on-screen controls (`button` events report `source: 'gamepad'`).
+
+## Windows programs (.exe)
+
+WinDroid opens `.exe` files with **Box64** (x86-64 to ARM64 dynamic recompiler, built in CI as `libbox64.so`) and **Wine**.
+
+- Opening an `.exe` shows its icon, publisher, version, architecture and installer type, with **Run** and **Install**. Installing copies it to `C:\Program Files\<App>` and adds it to **All apps** on the Start menu and, optionally, to the desktop as a shortcut (`.lnk`).
+- Settings > Apps downloads the Wine runtime once (or installs it from a local `.tar.gz`), and lists and uninstalls installed apps.
+- The runtime package is built by the **Windows Runtime** workflow (`runtime/build-runtime.sh`, Debian + Wine x64) and published to the `runtime-v1` release, which is where WinDroid downloads it from.
+- WinDroid's `C:` drive is mapped as `D:` inside Wine.
+
+Current stage: console programs run and their output/input is shown in a console window. Graphical programs start, but their windows need the WinDroid display server, which is the next stage. 64-bit programs are the target; 32-bit ones need a WoW64 runtime. Box64 is built against Android API 31, so running programs needs Android 12 or newer.
+
 ## Project layout
 
 ```

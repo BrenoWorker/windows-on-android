@@ -1,5 +1,6 @@
 #pragma once
 #include <deque>
+#include <map>
 #include <functional>
 #include <memory>
 #include <string>
@@ -10,11 +11,12 @@
 #include "../core/Theme.h"
 #include "../core/Ui.h"
 #include "Icons.h"
+#include "Programs.h"
 #include "TouchKeyboard.h"
 
 namespace wd {
 
-enum class AppKind { Explorer, Browser, Notepad, Calculator, Settings, Terminal, Paint, Minesweeper, Dialog };
+enum class AppKind { Explorer, Browser, Notepad, Calculator, Settings, Terminal, Paint, Minesweeper, Dialog, Program };
 
 struct AppInfo {
     AppKind kind;
@@ -51,6 +53,26 @@ public:
     virtual void key(int id, int key) = 0;
     virtual WebState state(int id) = 0;
     virtual bool snapshot(int id, std::vector<unsigned char>& rgba, int& w, int& h) = 0;
+    virtual void gamepad(int id, int button, bool down) {}
+};
+
+enum PadButton {
+    PadA = 0,
+    PadB,
+    PadX,
+    PadY,
+    PadL1,
+    PadR1,
+    PadL2,
+    PadR2,
+    PadStart,
+    PadSelect,
+    PadUp,
+    PadDown,
+    PadLeft,
+    PadRight,
+    PadThumbL,
+    PadThumbR
 };
 
 enum WebAction { WebBack = 0, WebForward, WebReload, WebStop, WebOpenInChrome, WebToggleDesktop, WebToggleControls, WebExitFullscreen };
@@ -67,6 +89,7 @@ struct Platform {
     std::function<void()> quit;
     std::function<float()> batteryLevel;
     std::shared_ptr<WebBridge> web;
+    std::function<std::string(const std::string&, const std::string&)> sys;
 };
 
 struct Config {
@@ -87,6 +110,7 @@ public:
     virtual void draw(Ui& ui, const Rect& client) = 0;
     virtual bool wantsText() const { return false; }
     virtual bool onBack() { return false; }
+    virtual bool gamepad(int button, bool down) { return false; }
     virtual void hidden() {}
     virtual bool customTitle() const { return false; }
     virtual Color titleColor(const Theme& th, bool focused) const { return focused ? th.mica : th.surface; }
@@ -128,10 +152,17 @@ public:
     void key(int k);
     void character(uint32_t cp);
     bool back();
+    void gamepad(int button, bool down);
+    std::string sys(const std::string& cmd, const std::string& arg = "") const {
+        return plat_.sys ? plat_.sys(cmd, arg) : std::string();
+    }
     void hardwareKeyInput();
     bool wantsContinuousFrames() const { return true; }
 
     AppWindow* open(AppKind k, const std::string& arg = "");
+    AppWindow* attach(std::unique_ptr<AppWindow> w, AppKind k);
+    AppWindow* openProgram(const std::string& exe, bool run, const std::string& args = "");
+    void drawFileIcon(const std::string& path, IconId fallback, const Rect& r, Color c);
     void openFile(const std::string& path);
     void prompt(const std::string& title, const std::string& message, const std::string& initial,
                 std::function<void(const std::string&)> ok);
@@ -287,6 +318,18 @@ private:
     float deskFade_ = 1;
     float battery_ = 1.0f;
     double batteryT_ = -100;
+    double btT_ = -100;
+    struct FileIcon {
+        GLuint tex = 0;
+        long long mtime = -1;
+        int ver = -1;
+    };
+    std::map<std::string, FileIcon> fileIcons_;
+    int iconLoads_ = 0;
+    std::vector<Shortcut> progs_;
+    int progsVer_ = -1;
+    const std::vector<Shortcut>& programs();
+    void loadFileIcon(const std::string& path, FileIcon& fi);
     int openCount_ = 0;
 };
 

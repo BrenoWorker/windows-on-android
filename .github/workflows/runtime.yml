@@ -1,0 +1,38 @@
+name: Windows Runtime
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag that WinDroid downloads the runtime from
+        default: runtime-v1
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y debootstrap file
+
+      - name: Build runtime
+        run: sudo bash runtime/build-runtime.sh "$RUNNER_TEMP/out"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "WinDroid Windows runtime" \
+              --notes "Wine (x64) root filesystem used by WinDroid with Box64 to run .exe files."
+          fi
+          gh release upload "$TAG" "$RUNNER_TEMP/out/windroid-runtime-x86_64.tar.gz" --clobber

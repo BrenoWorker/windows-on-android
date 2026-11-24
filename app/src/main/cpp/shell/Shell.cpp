@@ -4,7 +4,10 @@
 #include <cstdio>
 #include <ctime>
 
+#include <sys/stat.h>
+
 #include "../apps/Apps.h"
+#include "Programs.h"
 #include "../core/Utf8.h"
 
 namespace wd {
@@ -282,6 +285,33 @@ bool Shell::back() {
     return true;
 }
 
+void Shell::gamepad(int button, bool down) {
+    hardwareKb_ = true;
+    if (state_ == State::Desktop && !startOpen_ && !ctxOpen_ && focused_ && !focused_->minimized && focused_->gamepad(button, down))
+        return;
+    if (!down) return;
+    switch (button) {
+        case PadUp: key(KeyUp); break;
+        case PadDown: key(KeyDown); break;
+        case PadLeft: key(KeyLeft); break;
+        case PadRight: key(KeyRight); break;
+        case PadA: key(KeyEnter); break;
+        case PadB: back(); break;
+        case PadX: key(KeyBackspace); break;
+        case PadL1: key(KeyTab); break;
+        case PadStart:
+            if (state_ == State::Desktop) {
+                bool open = startOpen_;
+                closeFlyouts();
+                startOpen_ = !open;
+            } else {
+                key(KeyEnter);
+            }
+            break;
+        default: break;
+    }
+}
+
 void Shell::closeFlyouts() {
     startOpen_ = false;
     quickOpen_ = false;
@@ -326,12 +356,17 @@ AppWindow* Shell::open(AppKind k, const std::string& arg) {
         case AppKind::Paint: w = makePaint(*this, arg); break;
         case AppKind::Minesweeper: w = makeMinesweeper(*this); break;
         case AppKind::Dialog: return nullptr;
+        case AppKind::Program: return openProgram(arg, false);
     }
+    return attach(std::move(w), k);
+}
+
+AppWindow* Shell::attach(std::unique_ptr<AppWindow> w, AppKind k) {
     if (!w) return nullptr;
     w->shell = this;
     w->kind = k;
     if (w->title.empty()) w->title = appInfo(k).name;
-    w->icon = appInfo(k).icon;
+    if (k != AppKind::Program) w->icon = appInfo(k).icon;
     Rect wa = workArea();
     float W = std::min(w->prefW, wa.w - 16), H = std::min(w->prefH, wa.h - 16);
     float off = (float)(openCount_++ % 6) * 26 - 52;
@@ -348,12 +383,95 @@ AppWindow* Shell::open(AppKind k, const std::string& arg) {
     return raw;
 }
 
+AppWindow* Shell::openProgram(const std::string& exe, bool run, const std::string& args) {
+    return attach(makeProgram(*this, exe, run, args), AppKind::Program);
+}
+
+const std::vector<Shortcut>& Shell::programs() {
+    if (progsVer_ != fsVersion_) {
+        progsVer_ = fsVersion_;
+        progs_ = installedPrograms(*this);
+    }
+    return progs_;
+}
+
+void Shell::loadFileIcon(const std::string& path, FileIcon& fi) {
+    struct stat st;
+    long long mt = stat(path.c_str(), &st) == 0 ? (long long)st.st_mtime : 0;
+    fi.ver = fsVersion_;
+    if (mt == fi.mtime) return;
+    if (iconLoads_ >= 2) {
+        fi.ver = -1;
+        return;
+    }
+    iconLoads_++;
+    fi.mtime = mt;
+    if (fi.tex) {
+        gfx_.deleteTexture(fi.tex);
+        fi.tex = 0;
+    }
+    std::string exe = path;
+    if (isShortcut(path)) {
+        Shortcut sc;
+        if (!readShortcut(*this, path, sc)) return;
+        exe = sc.target;
+    }
+    if (fs::extension(exe) != "exe") return;
+    PeInfo pe;
+    if (readPe(exe, pe, true) && pe.iconW > 0 && !pe.icon.empty()) fi.tex = gfx_.createTexture(pe.iconW, pe.iconH, pe.icon.data());
+}
+
+void Shell::drawFileIcon(const std::string& path, IconId fallback, const Rect& r, Color c) {
+    std::string ext = fs::extension(path);
+    bool lnk = ext == "lnk";
+    if (ext != "exe" && !lnk) {
+        drawIcon(gfx_, fallback, r, c);
+        return;
+    }
+    FileIcon& fi = fileIcons_[path];
+    if (fi.ver != fsVersion_) loadFileIcon(path, fi);
+    if (fi.tex)
+        gfx_.image(fi.tex, r);
+    else
+        drawIcon(gfx_, ext == "exe" ? IcDialog : fallback, r, c);
+    if (lnk) {
+        float s = std::max(8.f, r.w * 0.36f);
+        Rect b{r.x, r.b() - s, s, s};
+        gfx_.rect(b, rgb(0xFFFFFF), s * 0.15f);
+        gfx_.stroke(b, rgb(0x000000, 0.35f), s * 0.15f, 1);
+        Color ac = rgb(0x1A73E8);
+        gfx_.line(b.x + s * 0.28f, b.b() - s * 0.28f, b.r() - s * 0.28f, b.y + s * 0.28f, std::max(1.f, s * 0.12f), ac);
+        gfx_.line(b.r() - s * 0.28f, b.y + s * 0.28f, b.r() - s * 0.62f, b.y + s * 0.28f, std::max(1.f, s * 0.12f), ac);
+        gfx_.line(b.r() - s * 0.28f, b.y + s * 0.28f, b.r() - s * 0.28f, b.y + s * 0.62f, std::max(1.f, s * 0.12f), ac);
+    }
+}
+
 void Shell::openFile(const std::string& path) {
     if (fs::isDir(path)) {
         open(AppKind::Explorer, path);
         return;
     }
     std::string ext = fs::extension(path);
+    if (ext == "lnk") {
+        Shortcut sc;
+        if (!readShortcut(*this, path, sc)) {
+            message("Shortcut", "This shortcut is damaged and can't be opened.");
+            return;
+        }
+        if (!fs::exists(sc.target)) {
+            message("Problem with Shortcut", "The item '" + displayPath(sc.target) + "' that this shortcut refers to has been changed or moved.");
+            return;
+        }
+        if (fs::extension(sc.target) == "exe")
+            openProgram(sc.target, true, sc.args);
+        else
+            openFile(sc.target);
+        return;
+    }
+    if (ext == "exe") {
+        openProgram(path, isInstalledPath(*this, path));
+        return;
+    }
     if (ext == "bmp")
         open(AppKind::Paint, path);
     else
@@ -599,6 +717,7 @@ void Shell::frame(double t) {
     if (stateT_ < 0) stateT_ = t;
     ui_.time = t;
     ui_.dt = dt;
+    iconLoads_ = 0;
     processInput();
 
     if (time_ - batteryT_ > 30) {
@@ -932,7 +1051,8 @@ void Shell::refreshDesktop() {
     std::string dd = fs::join(userDir(), "Desktop");
     for (auto& e : fs::list(dd)) {
         IconId ic = e.dir ? IcFolder : (fs::extension(e.name) == "bmp" ? IcImage : IcFile);
-        desk_.push_back({e.name, fs::join(dd, e.name), ic, 0});
+        std::string shown = fs::extension(e.name) == "lnk" ? fs::stem(e.name) : e.name;
+        desk_.push_back({shown, fs::join(dd, e.name), ic, 0});
     }
     if (deskSel_ >= (int)desk_.size()) deskSel_ = -1;
 }
@@ -996,7 +1116,10 @@ void Shell::drawDesktopIcons(bool cap) {
         } else if (ui.held(cell)) {
             gfx_.rect(cell, rgb(0xFFFFFF, 0.14f), 4);
         }
-        drawIcon(gfx_, d.icon, {cell.cx() - 22, cell.y + 6, 44, 44}, rgb(0xFFFFFF));
+        if (d.special == 0)
+            drawFileIcon(d.path, d.icon, {cell.cx() - 22, cell.y + 6, 44, 44}, rgb(0xFFFFFF));
+        else
+            drawIcon(gfx_, d.icon, {cell.cx() - 22, cell.y + 6, 44, 44}, rgb(0xFFFFFF));
         std::string label = gfx_.ellipsize(11.5f, d.name, cw - 6);
         Rect lr{cell.x, cell.y + 54, cell.w, 22};
         gfx_.textIn({lr.x + 1, lr.y + 1, lr.w, lr.h}, 11.5f, label, rgb(0x000000, 0.65f), AlignCenter);
@@ -1026,7 +1149,8 @@ void Shell::drawDesktopIcons(bool cap) {
                 items.push_back({"Rename", IcGlyphRename, [this, item]() {
                                      prompt("Rename", "Enter a new name:", item.name, [this, item](const std::string& n) {
                                          if (n.empty() || n == item.name) return;
-                                         fs::renamePath(item.path, fs::join(fs::parent(item.path), n));
+                                         std::string nn = fs::extension(item.path) == "lnk" && fs::extension(n) != "lnk" ? n + ".lnk" : n;
+                                     fs::renamePath(item.path, fs::join(fs::parent(item.path), nn));
                                          notifyFs();
                                      });
                                  }});
@@ -1232,6 +1356,7 @@ void Shell::drawTaskbar(bool cap) {
         if (a.pinned) items.push_back({2, a.kind, a.icon});
     for (auto& a : appCatalog())
         if (!a.pinned && !windowsOf(a.kind).empty()) items.push_back({2, a.kind, a.icon});
+    if (!windowsOf(AppKind::Program).empty()) items.push_back({2, AppKind::Program, IcDialog});
     float slot = 44;
     float total = items.size() * slot - 4;
     float x0 = cfg_.taskbarLeft ? 10 + insL_ : (tb.w - total) * 0.5f;
@@ -1452,7 +1577,8 @@ void Shell::drawStart(bool cap) {
         Rect list{body.x, body.y + 34, body.w, body.h - 34};
         std::vector<AppInfo> sorted = appCatalog();
         std::sort(sorted.begin(), sorted.end(), [](const AppInfo& x, const AppInfo& y) { return std::string(x.name) < y.name; });
-        float contentH = sorted.size() * 42.f + 30 * 4;
+        const std::vector<Shortcut>& progs = programs();
+        float contentH = sorted.size() * 42.f + 30 * 4 + (progs.empty() ? 0.f : 40.f + progs.size() * 42.f);
         if (ui.dragging(list)) startScroll_ = clampf(startScroll_ - ui.dy(), 0, std::max(0.f, contentH - list.h));
         gfx_.pushClip(list);
         float y = list.y - startScroll_;
@@ -1473,6 +1599,22 @@ void Shell::drawStart(bool cap) {
                 break;
             }
             y += 42;
+        }
+        if (!progs.empty()) {
+            gfx_.text(list.x + 12, y + 10, 12, "Windows apps", theme_.accent);
+            y += 34;
+            for (auto& pr : progs) {
+                Rect r{list.x, y, list.w, 40};
+                ui.pressFill(r, 5);
+                drawFileIcon(pr.target, IcDialog, {r.x + 12, r.cy() - 12, 24, 24}, theme_.text);
+                gfx_.textIn({r.x + 48, r.y, r.w - 48, r.h}, 13, gfx_.ellipsize(13, pr.name, r.w - 56), theme_.text);
+                if (ui.clicked(r)) {
+                    closeFlyouts();
+                    openFile(pr.path);
+                    break;
+                }
+                y += 42;
+            }
         }
         gfx_.popClip();
     } else {
@@ -1587,7 +1729,12 @@ void Shell::drawQuick(bool cap) {
         int special;
     };
     bool darkV = cfg_.dark;
-    T tiles[] = {{"Wi-Fi", IcGlyphWifi, &wifi_, 0},       {"Bluetooth", IcGlyphBluetooth, &bt_, 0},
+    if (plat_.sys && time_ - btT_ > 1.0) {
+        btT_ = time_;
+        std::string st = sys("bt.state");
+        if (st.size() >= 3) bt_ = st[0] == '1' && st[2] == '1';
+    }
+    T tiles[] = {{"Wi-Fi", IcGlyphWifi, &wifi_, 0},       {"Bluetooth", IcGlyphBluetooth, &bt_, 2},
                  {"Airplane mode", IcGlyphPlane, &airplane_, 0}, {"Battery saver", IcGlyphLeaf, &saver_, 0},
                  {"Dark mode", IcGlyphMoon, &darkV, 1},    {"Night light", IcGlyphSun, &night_, 0}};
     float tw = (q.w - pad * 2 - 16) / 3;
@@ -1602,8 +1749,17 @@ void Shell::drawQuick(bool cap) {
         if (!on) gfx_.stroke(btn, alpha(theme_.text, 0.12f), 5, 1);
         drawIcon(gfx_, tiles[i].icon, btn.centered(18, 18), on ? theme_.accentText : theme_.text);
         gfx_.textIn({x - 6, y + 48, tw + 12, 18}, 11, gfx_.ellipsize(11, tiles[i].label, tw + 12), theme_.text, AlignCenter);
+        if (tiles[i].special == 2 && ui.longPressed(btn)) {
+            closeFlyouts();
+            open(AppKind::Settings, "bluetooth");
+            continue;
+        }
         if (ui.clicked(btn)) {
             *tiles[i].v = !on;
+            if (tiles[i].special == 2 && plat_.sys) {
+                sys("bt.enable", on ? "0" : "1");
+                btT_ = time_ + 1.5;
+            }
             if (tiles[i].special == 1) {
                 cfg_.dark = darkV;
                 applyConfig();
@@ -1611,6 +1767,7 @@ void Shell::drawQuick(bool cap) {
             }
             if (tiles[i].v == &airplane_ && airplane_) {
                 wifi_ = false;
+                if (bt_ && plat_.sys) sys("bt.enable", "0");
                 bt_ = false;
             }
         }

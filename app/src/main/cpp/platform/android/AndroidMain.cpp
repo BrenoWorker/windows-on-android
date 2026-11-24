@@ -11,6 +11,8 @@
 #include <sys/system_properties.h>
 #include <time.h>
 
+#include <algorithm>
+#include <cmath>
 #include <cstdio>
 #include <memory>
 #include <string>
@@ -33,6 +35,8 @@ struct Engine {
     int height = 0;
     bool focused = true;
     int primaryPointer = -1;
+    int padAxes = 0;
+    jmethodID sysMethod = nullptr;
     double insetsTime = 0;
     std::unique_ptr<Shell> shell;
 };
@@ -135,6 +139,8 @@ public:
         state_ = env->GetMethodID(cls, "webState", "(I)Ljava/lang/String;");
         snapshot_ = env->GetMethodID(cls, "webSnapshot", "(I)[I");
         clearException(env);
+        gamepad_ = env->GetMethodID(cls, "webGamepad", "(IIZ)V");
+        clearException(env);
         env->DeleteLocalRef(cls);
     }
 
@@ -161,6 +167,11 @@ public:
     }
     void key(int id, int k) override {
         env_->CallVoidMethod(activity_, key_, (jint)id, (jint)k);
+        clearException(env_);
+    }
+    void gamepad(int id, int button, bool down) override {
+        if (!gamepad_) return;
+        env_->CallVoidMethod(activity_, gamepad_, (jint)id, (jint)button, (jboolean)down);
         clearException(env_);
     }
     WebState state(int id) override {
@@ -237,8 +248,92 @@ private:
     JNIEnv* env_;
     jobject activity_;
     jmethodID create_ = nullptr, destroy_ = nullptr, layout_ = nullptr, load_ = nullptr, action_ = nullptr;
-    jmethodID text_ = nullptr, key_ = nullptr, state_ = nullptr, snapshot_ = nullptr;
+    jmethodID text_ = nullptr, key_ = nullptr, state_ = nullptr, snapshot_ = nullptr, gamepad_ = nullptr;
 };
+
+std::string callSys(Engine& e, const std::string& cmd, const std::string& arg) {
+    JNIEnv* env = e.env;
+    if (!env) return "";
+    if (!e.sysMethod) {
+        jclass cls = env->GetObjectClass(e.app->activity->clazz);
+        e.sysMethod = env->GetMethodID(cls, "sys", "([B[B)[B");
+        clearException(env);
+        env->DeleteLocalRef(cls);
+        if (!e.sysMethod) return "";
+    }
+    jbyteArray c = env->NewByteArray((jsize)cmd.size());
+    jbyteArray a = env->NewByteArray((jsize)arg.size());
+    if (!c || !a) {
+        clearException(env);
+        if (c) env->DeleteLocalRef(c);
+        if (a) env->DeleteLocalRef(a);
+        return "";
+    }
+    env->SetByteArrayRegion(c, 0, (jsize)cmd.size(), (const jbyte*)cmd.data());
+    env->SetByteArrayRegion(a, 0, (jsize)arg.size(), (const jbyte*)arg.data());
+    jbyteArray r = (jbyteArray)env->CallObjectMethod(e.app->activity->clazz, e.sysMethod, c, a);
+    clearException(env);
+    env->DeleteLocalRef(c);
+    env->DeleteLocalRef(a);
+    std::string out;
+    if (r) {
+        jsize n = env->GetArrayLength(r);
+        out.resize((size_t)n);
+        if (n > 0) env->GetByteArrayRegion(r, 0, n, (jbyte*)&out[0]);
+        env->DeleteLocalRef(r);
+    }
+    return out;
+}
+
+int padButton(int32_t code) {
+    switch (code) {
+        case AKEYCODE_BUTTON_A: return PadA;
+        case AKEYCODE_BUTTON_B: return PadB;
+        case AKEYCODE_BUTTON_X: return PadX;
+        case AKEYCODE_BUTTON_Y: return PadY;
+        case AKEYCODE_BUTTON_L1: return PadL1;
+        case AKEYCODE_BUTTON_R1: return PadR1;
+        case AKEYCODE_BUTTON_L2: return PadL2;
+        case AKEYCODE_BUTTON_R2: return PadR2;
+        case AKEYCODE_BUTTON_START: return PadStart;
+        case AKEYCODE_BUTTON_SELECT: return PadSelect;
+        case AKEYCODE_BUTTON_THUMBL: return PadThumbL;
+        case AKEYCODE_BUTTON_THUMBR: return PadThumbR;
+        case AKEYCODE_DPAD_UP: return PadUp;
+        case AKEYCODE_DPAD_DOWN: return PadDown;
+        case AKEYCODE_DPAD_LEFT: return PadLeft;
+        case AKEYCODE_DPAD_RIGHT: return PadRight;
+        default: return -1;
+    }
+}
+
+bool fromPad(AInputEvent* event) {
+    int32_t src = AInputEvent_getSource(event);
+    return (src & AINPUT_SOURCE_GAMEPAD) == AINPUT_SOURCE_GAMEPAD || (src & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK;
+}
+
+void padAxes(Engine& e, AInputEvent* event) {
+    float x = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_HAT_X, 0);
+    float y = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_HAT_Y, 0);
+    if (std::fabs(x) < 0.5f) x = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_X, 0);
+    if (std::fabs(y) < 0.5f) y = AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_Y, 0);
+    float lt = std::max(AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_LTRIGGER, 0),
+                        AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_BRAKE, 0));
+    float rt = std::max(AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_RTRIGGER, 0),
+                        AMotionEvent_getAxisValue(event, AMOTION_EVENT_AXIS_GAS, 0));
+    int mask = 0;
+    if (y < -0.5f) mask |= 1 << 0;
+    if (y > 0.5f) mask |= 1 << 1;
+    if (x < -0.5f) mask |= 1 << 2;
+    if (x > 0.5f) mask |= 1 << 3;
+    if (lt > 0.5f) mask |= 1 << 4;
+    if (rt > 0.5f) mask |= 1 << 5;
+    static const int buttons[] = {PadUp, PadDown, PadLeft, PadRight, PadL2, PadR2};
+    int changed = mask ^ e.padAxes;
+    for (int i = 0; i < 6; i++)
+        if (changed & (1 << i)) e.shell->gamepad(buttons[i], (mask & (1 << i)) != 0);
+    e.padAxes = mask;
+}
 
 void updateInsets(Engine& e) {
     if (!e.env || !e.shell) return;
@@ -295,6 +390,7 @@ bool initDisplay(Engine& e) {
         Engine* ep = &e;
         p.quit = [ep]() { ANativeActivity_finish(ep->app->activity); };
         p.batteryLevel = [ep]() { return batteryLevel(*ep); };
+        p.sys = [ep](const std::string& c, const std::string& a) { return callSys(*ep, c, a); };
         if (e.env) {
             auto bridge = std::make_shared<JniWebBridge>(e.env, e.app->activity->clazz);
             if (bridge->valid()) p.web = bridge;
@@ -374,6 +470,10 @@ int32_t onInput(android_app* app, AInputEvent* event) {
     Engine& e = *(Engine*)app->userData;
     if (!e.shell) return 0;
     int32_t type = AInputEvent_getType(event);
+    if (type == AINPUT_EVENT_TYPE_MOTION && (AInputEvent_getSource(event) & AINPUT_SOURCE_JOYSTICK) == AINPUT_SOURCE_JOYSTICK) {
+        padAxes(e, event);
+        return 1;
+    }
     if (type == AINPUT_EVENT_TYPE_MOTION) {
         int32_t action = AMotionEvent_getAction(event);
         int32_t masked = action & AMOTION_EVENT_ACTION_MASK;
@@ -419,6 +519,12 @@ int32_t onInput(android_app* app, AInputEvent* event) {
         int32_t action = AKeyEvent_getAction(event);
         if (code == AKEYCODE_BACK) {
             if (action == AKEY_EVENT_ACTION_UP) e.shell->back();
+            return 1;
+        }
+        int pb = padButton(code);
+        if (pb >= 0 && (fromPad(event) || code >= AKEYCODE_BUTTON_A)) {
+            if (action == AKEY_EVENT_ACTION_DOWN && AKeyEvent_getRepeatCount(event) == 0) e.shell->gamepad(pb, true);
+            if (action == AKEY_EVENT_ACTION_UP) e.shell->gamepad(pb, false);
             return 1;
         }
         if (code == AKEYCODE_VOLUME_UP || code == AKEYCODE_VOLUME_DOWN || code == AKEYCODE_VOLUME_MUTE ||

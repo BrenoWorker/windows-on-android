@@ -101,6 +101,21 @@ final class GamePad extends View {
         buttons.add(b);
     }
 
+    String gamepadKey(int button) {
+        if (button >= 10 && button <= 13) return dirKeys[button - 10];
+        if (button <= 5) return button < buttons.size() ? buttons.get(button).key : "";
+        if (button == 8) return "Enter";
+        if (button == 9) return "Escape";
+        return "";
+    }
+
+    String gamepadId(int button) {
+        if (button >= 10 && button <= 13) return DIR_IDS[button - 10];
+        if (button <= 5 && button < buttons.size()) return buttons.get(button).id;
+        String[] names = {"a", "b", "x", "y", "l1", "r1", "l2", "r2", "start", "select", "up", "down", "left", "right", "l3", "r3"};
+        return button >= 0 && button < names.length ? names[button] : "pad" + button;
+    }
+
     void setState(boolean showControls, boolean isFullscreen) {
         if (controls && !showControls) releaseAll();
         controls = showControls;

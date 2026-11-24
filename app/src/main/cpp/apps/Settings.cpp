@@ -1,12 +1,15 @@
 #include <GLES2/gl2.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <memory>
 
 #include "Apps.h"
 #include "Common.h"
+#include "../shell/Programs.h"
 
 namespace wd {
 
@@ -19,10 +22,12 @@ public:
         prefH = 520;
         minW = 360;
         minH = 300;
-        if (arg == "personalization") page_ = 1;
-        if (arg == "accounts") page_ = 2;
-        if (arg == "time") page_ = 3;
-        if (arg == "about") page_ = 4;
+        if (arg == "bluetooth") page_ = 1;
+        if (arg == "personalization") page_ = 2;
+        if (arg == "apps") page_ = 3;
+        if (arg == "accounts") page_ = 4;
+        if (arg == "time") page_ = 5;
+        if (arg == "about") page_ = 6;
     }
 
     void draw(Ui& ui, const Rect& c) override {
@@ -35,7 +40,7 @@ public:
         drawNav(ui, nav, compact);
         Rect content{c.x + navW, c.y, c.w - navW, c.h};
 
-        const char* titles[] = {"System", "Personalization", "Accounts", "Time & language", "About"};
+        const char* titles[] = {"System", "Bluetooth & devices", "Personalization", "Apps", "Accounts", "Time & language", "About"};
         if (ui.dragging(content)) scroll_ -= ui.dy();
         if (page_ != lastPage_) {
             scroll_ = 0;
@@ -50,10 +55,12 @@ public:
         float top = y;
         switch (page_) {
             case 0: y = pageSystem(ui, x, y, w); break;
-            case 1: y = pagePersonal(ui, x, y, w); break;
-            case 2: y = pageAccounts(ui, x, y, w); break;
-            case 3: y = pageTime(ui, x, y, w); break;
-            case 4: y = pageAbout(ui, x, y, w); break;
+            case 1: y = pageBluetooth(ui, x, y, w); break;
+            case 2: y = pagePersonal(ui, x, y, w); break;
+            case 3: y = pageApps(ui, x, y, w); break;
+            case 4: y = pageAccounts(ui, x, y, w); break;
+            case 5: y = pageTime(ui, x, y, w); break;
+            case 6: y = pageAbout(ui, x, y, w); break;
         }
         contentH_ = y - top + 70;
         g.popClip();
@@ -81,9 +88,9 @@ private:
         } else {
             y += 6;
         }
-        IconId icons[] = {IcPC, IcGlyphBrush, IcUser, IcClock, IcGlyphGear};
-        const char* labels[] = {"System", "Personalization", "Accounts", "Time & language", "About"};
-        for (int i = 0; i < 5; i++) {
+        IconId icons[] = {IcPC, IcGlyphBluetooth, IcGlyphBrush, IcGlyphGrid, IcUser, IcClock, IcGlyphGear};
+        const char* labels[] = {"System", "Bluetooth & devices", "Personalization", "Apps", "Accounts", "Time & language", "About"};
+        for (int i = 0; i < 7; i++) {
             Rect ir{r.x + 6, y, r.w - 12, 38};
             bool sel = page_ == i;
             if (sel) g.rect(ir, th.press, 5);
@@ -159,6 +166,291 @@ private:
         }
         g.text(x + 60, y + 74, 11, "WinDroid files: " + fs::formatSize(cachedSize_), th.textDim);
         y += 100;
+        return y;
+    }
+
+    struct BtDevice {
+        std::string address, name, kind;
+        int bond = 0;
+        bool connected = false;
+        int battery = -1;
+        int rssi = 0;
+    };
+    double btPoll_ = -10;
+    bool btSupported_ = false, btOn_ = false, btScanning_ = false, btPerm_ = false;
+    std::string btName_;
+    std::vector<BtDevice> btDevices_;
+    std::string toast_;
+    double toastT_ = -10;
+    double rtPoll_ = -10;
+    std::vector<std::string> rt_;
+    int rtSeq_ = -1;
+
+    static std::vector<std::string> split(const std::string& s, char sep) {
+        std::vector<std::string> out;
+        size_t i = 0;
+        while (true) {
+            size_t j = s.find(sep, i);
+            out.push_back(s.substr(i, j == std::string::npos ? std::string::npos : j - i));
+            if (j == std::string::npos) break;
+            i = j + 1;
+        }
+        return out;
+    }
+
+    void showToast(const std::string& t) {
+        if (t.empty()) return;
+        toast_ = t;
+        toastT_ = shell->now();
+    }
+
+    void pollBluetooth() {
+        if (shell->now() - btPoll_ < 0.6) return;
+        btPoll_ = shell->now();
+        auto st = split(shell->sys("bt.state"), '\t');
+        btSupported_ = st.size() >= 4 && st[0] == "1";
+        btOn_ = st.size() >= 2 && st[1] == "1";
+        btScanning_ = st.size() >= 3 && st[2] == "1";
+        btPerm_ = st.size() >= 4 && st[3] == "1";
+        btName_ = st.size() >= 5 ? st[4] : "";
+        if (st.size() >= 6) showToast(st[5]);
+        btDevices_.clear();
+        for (auto& line : split(shell->sys("bt.devices"), '\n')) {
+            auto f = split(line, '\t');
+            if (f.size() < 7) continue;
+            BtDevice d;
+            d.address = f[0];
+            d.name = f[1];
+            d.kind = f[2];
+            d.bond = atoi(f[3].c_str());
+            d.connected = f[4] == "1";
+            d.battery = atoi(f[5].c_str());
+            d.rssi = atoi(f[6].c_str());
+            btDevices_.push_back(d);
+        }
+        std::stable_sort(btDevices_.begin(), btDevices_.end(), [](const BtDevice& a, const BtDevice& b) {
+            if (a.connected != b.connected) return a.connected;
+            return false;
+        });
+    }
+
+    static IconId kindIcon(const std::string& k) {
+        if (k == "audio" || k == "headset") return IcGlyphVolume;
+        if (k == "keyboard") return IcGlyphKeyboard;
+        if (k == "gamepad") return IcGlyphGamepad;
+        if (k == "computer") return IcPC;
+        if (k == "watch") return IcClock;
+        if (k == "mouse" || k == "input") return IcGlyphGrid;
+        return IcGlyphBluetooth;
+    }
+
+    static std::string kindName(const std::string& k) {
+        if (k == "audio") return "Audio";
+        if (k == "headset") return "Headphones";
+        if (k == "keyboard") return "Keyboard";
+        if (k == "gamepad") return "Game controller";
+        if (k == "mouse") return "Mouse";
+        if (k == "input") return "Input device";
+        if (k == "phone") return "Phone";
+        if (k == "computer") return "Computer";
+        if (k == "watch") return "Wearable";
+        return "Other device";
+    }
+
+    float drawToast(Ui& ui, float x, float y, float w) {
+        Gfx& g = *ui.g;
+        const Theme& th = *ui.th;
+        if (toast_.empty() || shell->now() - toastT_ > 5) return y;
+        Rect r{x, y, w, 40};
+        g.rect(r, th.dark ? rgb(0x1F3A52) : rgb(0xDCEBFA), 6);
+        g.textIn({r.x + 14, r.y, r.w - 28, r.h}, 12.5f, g.ellipsize(12.5f, toast_, r.w - 28), th.text);
+        return y + 48;
+    }
+
+    float pageBluetooth(Ui& ui, float x, float y, float w) {
+        Gfx& g = *ui.g;
+        const Theme& th = *ui.th;
+        if (!shell->platform().sys) {
+            return row(ui, x, y, w, IcGlyphBluetooth, "Bluetooth", "Bluetooth is only available on Android");
+        }
+        pollBluetooth();
+        y = drawToast(ui, x, y, w);
+        if (!btSupported_) return row(ui, x, y, w, IcGlyphBluetooth, "Bluetooth", "This device doesn't have Bluetooth");
+        if (!btPerm_) {
+            float ty = y;
+            y = row(ui, x, y, w, IcGlyphLock, "Allow Bluetooth access", "WinDroid needs permission to find and connect to nearby devices", 72);
+            if (ui.button({x + w - 116, ty + 20, 100, 32}, "Allow", true)) shell->sys("bt.permission");
+            y += 10;
+        }
+        float ty = y;
+        std::string desc = btOn_ ? (btName_.empty() ? "On" : "Discoverable as \"" + btName_ + "\"") : "Off";
+        y = row(ui, x, y, w, IcGlyphBluetooth, "Bluetooth", desc, 72);
+        bool on = btOn_;
+        if (ui.toggle({x + w - 64, ty + 26, 48, 20}, on)) {
+            shell->sys("bt.enable", on ? "1" : "0");
+            btOn_ = on;
+            btPoll_ = shell->now() + 1;
+        }
+        g.text(x + w - 104, ty + 27, 12, btOn_ ? "On" : "Off", th.text);
+        if (btOn_) {
+            ty = y;
+            y = row(ui, x, y, w, IcGlyphPlus, "Add device", btScanning_ ? "Searching for devices..." : "Find headphones, controllers, keyboards and more");
+            if (btScanning_) {
+                float a = (float)shell->now() * 5.f;
+                g.arc(x + w - 150, ty + 32, 8, a, a + 4.2f, 2, th.accent);
+                if (ui.button({x + w - 116, ty + 16, 100, 32}, "Stop")) {
+                    shell->sys("bt.scan", "0");
+                    btPoll_ = -10;
+                }
+            } else if (ui.button({x + w - 116, ty + 16, 100, 32}, "Add device", true)) {
+                shell->sys("bt.scan", "1");
+                btPoll_ = shell->now() - 0.3;
+            }
+        }
+        y += 14;
+
+        std::vector<const BtDevice*> paired, found;
+        for (auto& d : btDevices_) (d.bond == 1 ? paired : found).push_back(&d);
+        if (btOn_ || !paired.empty()) {
+            g.textBold(x, y, 13, "Your devices", th.text);
+            y += 26;
+            if (paired.empty()) y = row(ui, x, y, w, IcGlyphBluetooth, "No paired devices", "Tap Add device to pair one");
+            for (auto* d : paired) {
+                ty = y;
+                std::string st = d->connected ? "Connected" : "Paired";
+                if (d->battery >= 0) st += "  \xC2\xB7  " + std::to_string(d->battery) + "% battery";
+                st = kindName(d->kind) + "  \xC2\xB7  " + st;
+                y = row(ui, x, y, w, kindIcon(d->kind), d->name, st);
+                if (d->connected) g.circle(x + 40, ty + 44, 4, rgb(0x6CCB5F));
+                if (d->battery >= 0 && w > 460) drawIcon(g, IcGlyphBattery, {x + w - 160, ty + 24, 22, 16}, th.text, d->battery / 100.f);
+                std::string addr = d->address;
+                if (ui.button({x + w - 116, ty + 16, 100, 32}, "Remove")) {
+                    shell->sys("bt.unpair", addr);
+                    btPoll_ = shell->now() - 0.2;
+                }
+            }
+            y += 14;
+        }
+        if (btOn_ && (btScanning_ || !found.empty())) {
+            g.textBold(x, y, 13, "Available devices", th.text);
+            y += 26;
+            if (found.empty()) y = row(ui, x, y, w, IcGlyphSearch, "Looking for devices", "Make sure your device is turned on and in pairing mode");
+            for (auto* d : found) {
+                ty = y;
+                std::string st = kindName(d->kind);
+                if (d->rssi != 0) st += d->rssi > -60 ? "  \xC2\xB7  Strong signal" : (d->rssi > -80 ? "  \xC2\xB7  Good signal" : "  \xC2\xB7  Weak signal");
+                y = row(ui, x, y, w, kindIcon(d->kind), d->name, st);
+                std::string addr = d->address;
+                if (d->bond == 2) {
+                    g.text(x + w - 104, ty + 23, 12, "Pairing...", th.textDim);
+                } else if (ui.button({x + w - 116, ty + 16, 100, 32}, "Pair", true)) {
+                    shell->sys("bt.pair", addr);
+                    showToast("Pairing with " + d->name + "...");
+                }
+            }
+            y += 14;
+        }
+        g.textBold(x, y, 13, "More settings", th.text);
+        y += 26;
+        ty = y;
+        y = row(ui, x, y, w, IcGlyphRename, "Device name", btName_.empty() ? "Unknown" : btName_);
+        Shell* sh = shell;
+        if (ui.button({x + w - 116, ty + 16, 100, 32}, "Rename", false, btPerm_)) {
+            sh->prompt("Rename this device", "Bluetooth name:", btName_, [sh](const std::string& n) {
+                if (!n.empty()) sh->sys("bt.rename", n);
+            });
+        }
+        ty = y;
+        y = row(ui, x, y, w, IcGlyphGamepad, "Game controllers", "Controllers work in WinDroid and in Browser games");
+        ty = y;
+        y = row(ui, x, y, w, IcGlyphExternal, "Android Bluetooth settings", "Connect audio devices and manage advanced options");
+        if (ui.button({x + w - 116, ty + 16, 100, 32}, "Open")) shell->sys("bt.settings");
+        return y;
+    }
+
+    void pollRuntime() {
+        if (shell->now() - rtPoll_ < 0.4) return;
+        rtPoll_ = shell->now();
+        rt_ = split(shell->sys("rt.status"), '\t');
+        while (rt_.size() < 8) rt_.push_back("");
+        int seq = atoi(rt_[7].c_str());
+        if (seq != rtSeq_) {
+            if (rtSeq_ >= 0 && !rt_[5].empty()) showToast(rt_[5]);
+            rtSeq_ = seq;
+        }
+    }
+
+    float pageApps(Ui& ui, float x, float y, float w) {
+        Gfx& g = *ui.g;
+        const Theme& th = *ui.th;
+        Shell* sh = shell;
+        y = drawToast(ui, x, y, w);
+        g.textBold(x, y, 13, "Windows compatibility", th.text);
+        y += 26;
+        if (!shell->platform().sys) {
+            y = row(ui, x, y, w, IcDialog, "Windows programs", "Running .exe files is only available on Android");
+        } else {
+            pollRuntime();
+            bool box = rt_[0] == "1", inst = rt_[1] == "1";
+            std::string state = rt_[2];
+            int progress = atoi(rt_[3].c_str());
+            float ty = y;
+            if (!box) {
+                y = row(ui, x, y, w, IcDialog, "Box64 is missing", "This build of WinDroid doesn't include the x64 emulator", 72);
+            } else if (state == "downloading" || state == "extracting") {
+                card(g, th, {x, y, w, 88});
+                drawIcon(g, IcGlyphDown, {x + 18, y + 18, 20, 20}, th.text);
+                long long done = atoll(rt_[6].c_str());
+                std::string label = state == "downloading" ? "Downloading runtime" : "Installing runtime";
+                g.text(x + 54, y + 16, 13, label, th.text);
+                std::string sub = fs::formatSize(done) + (progress >= 0 ? "  \xC2\xB7  " + std::to_string(progress / 10) + "%" : "");
+                g.text(x + 54, y + 36, 11.5f, sub, th.textDim);
+                Rect bar{x + 54, y + 62, w - 190, 6};
+                g.rect(bar, th.dark ? rgb(0x3A3A3A) : rgb(0xE6E6E6), 3);
+                if (progress >= 0) g.rect({bar.x, bar.y, bar.w * progress / 1000.f, bar.h}, th.accent, 3);
+                if (ui.button({x + w - 116, y + 28, 100, 32}, "Cancel")) sh->sys("rt.cancel");
+                y += 92;
+            } else if (!inst) {
+                std::string sub = state == "failed" && !rt_[5].empty() ? "Last attempt failed: " + rt_[5] : "Download Box64 + Wine (x64) once to open .exe files";
+                y = row(ui, x, y, w, IcDialog, "Run Windows programs", sub, 72);
+                if (ui.button({x + w - 116, ty + 20, 100, 32}, "Download", true)) sh->sys("rt.install", "");
+                ty = y;
+                y = row(ui, x, y, w, IcGlyphOpen, "Install from a file", "Use a windroid-runtime .tar.gz you already downloaded");
+                if (ui.button({x + w - 116, ty + 16, 100, 32}, "Choose")) {
+                    std::string def = shell->displayPath(fs::join(shell->userDir(), "Downloads/windroid-runtime-x86_64.tar.gz"));
+                    sh->prompt("Install runtime", "Path to the runtime package:", def, [sh](const std::string& p) {
+                        if (!p.empty()) sh->sys("rt.install", sh->realPath(p, sh->root()));
+                    });
+                }
+            } else {
+                std::string ver = rt_[4].empty() ? "Installed" : "Installed  \xC2\xB7  " + rt_[4];
+                y = row(ui, x, y, w, IcDialog, "Windows compatibility runtime", ver, 72);
+                g.circle(x + 40, ty + 50, 4, rgb(0x6CCB5F));
+                if (ui.button({x + w - 116, ty + 20, 100, 32}, "Remove")) sh->sys("rt.remove");
+                ty = y;
+                y = row(ui, x, y, w, IcGlyphRestart, "Reset Windows settings", "Deletes the Wine prefix (registry and C:\\windows) and starts fresh");
+                if (ui.button({x + w - 116, ty + 16, 100, 32}, "Reset")) sh->sys("rt.reset");
+            }
+        }
+        y += 14;
+        g.textBold(x, y, 13, "Installed apps", th.text);
+        y += 26;
+        auto progs = installedPrograms(*shell);
+        if (progs.empty()) y = row(ui, x, y, w, IcGlyphGrid, "No Windows apps installed", "Open an .exe file and choose Install");
+        for (auto& p : progs) {
+            float ty = y;
+            card(g, th, {x, y, w, 64});
+            shell->drawFileIcon(p.target, IcDialog, {x + 16, y + 18, 28, 28}, th.text);
+            g.text(x + 58, y + 14, 13, g.ellipsize(13, p.name, w - 260), th.text);
+            g.text(x + 58, y + 34, 11.5f, g.ellipsize(11.5f, shell->displayPath(p.target), w - 260), th.textDim);
+            y += 68;
+            Shortcut sc = p;
+            if (ui.button({x + w - 116, ty + 16, 100, 32}, "Uninstall")) {
+                uninstallProgram(*sh, sc);
+                showToast(sc.name + " was uninstalled");
+            }
+            if (ui.button({x + w - 222, ty + 16, 100, 32}, "Open", true)) sh->openFile(sc.path);
+        }
         return y;
     }
 

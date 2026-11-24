@@ -96,6 +96,9 @@ public:
             cmds.push_back({IcGlyphRename, "Rename", hasSel, 3});
             cmds.push_back({IcGlyphTrash, "Delete", hasSel, 4});
             cmds.push_back({IcTerminal, "Terminal", inFolder, 5});
+            bool selFile = hasSel && !entries_[(size_t)sel_].dir;
+            if (selFile && fs::extension(entries_[(size_t)sel_].name) == "exe") cmds.push_back({IcGlyphOpen, "Install", true, 6});
+            if (selFile) cmds.push_back({IcGlyphBluetooth, "Send", true, 7});
         }
         for (auto& cm : cmds) {
             float w = toolButtonWidth(g, cm.label, !narrow);
@@ -219,6 +222,11 @@ private:
             sel_ = -1;
         } else if (id == 5) {
             sh->open(AppKind::Terminal, path_);
+        } else if (id == 6 && sel_ >= 0) {
+            sh->openProgram(fs::join(path_, entries_[(size_t)sel_].name), false);
+        } else if (id == 7 && sel_ >= 0) {
+            std::string err = sh->sys("bt.send", fs::join(path_, entries_[(size_t)sel_].name));
+            if (!err.empty()) sh->message("Send via Bluetooth", err);
         } else if (id == 10) {
             for (auto& e : fs::list(sh->recycleDir())) fs::removeAll(fs::join(sh->recycleDir(), e.name));
             sh->notifyFs();
@@ -322,9 +330,10 @@ private:
             const fs::Entry& e = entries_[i];
             ui.pressFill(row, 4, (int)i == sel_);
             IconId ic = e.dir ? IcFolder : (fs::extension(e.name) == "bmp" ? IcImage : IcFile);
-            drawIcon(g, ic, {colX[0], row.cy() - 10, 20, 20}, th.text);
+            shell->drawFileIcon(fs::join(path_, e.name), ic, {colX[0], row.cy() - 10, 20, 20}, th.text);
             float nameMax = (showDate ? colX[1] : (showSize ? colX[3] : r.r())) - colX[0] - 40;
-            g.textIn({colX[0] + 30, row.y, nameMax, row.h}, 12.5f, g.ellipsize(12.5f, e.name, nameMax), th.text);
+            std::string shown = !e.dir && fs::extension(e.name) == "lnk" ? fs::stem(e.name) : e.name;
+            g.textIn({colX[0] + 30, row.y, nameMax, row.h}, 12.5f, g.ellipsize(12.5f, shown, nameMax), th.text);
             if (showDate) g.textIn({colX[1], row.y, 140, row.h}, 12, fs::formatTime(e.mtime), th.textDim);
             if (showType) g.textIn({colX[2], row.y, 140, row.h}, 12, g.ellipsize(12, fs::typeName(e), 132), th.textDim);
             if (showSize && !e.dir) g.textIn({colX[3], row.y, 90, row.h}, 12, fs::formatSize(e.size), th.textDim);
