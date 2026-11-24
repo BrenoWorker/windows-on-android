@@ -1,4 +1,5 @@
 #pragma once
+#include <atomic>
 #include <deque>
 #include <map>
 #include <functional>
@@ -100,6 +101,8 @@ struct Config {
     bool taskbarLeft = false;
     bool use24h = true;
     std::string user = "User";
+    bool sounds = true;
+    float volume = 0.6f;
 };
 
 class Shell;
@@ -158,6 +161,8 @@ public:
         return plat_.sys ? plat_.sys(cmd, arg) : std::string();
     }
     void hardwareKeyInput();
+    void playSound(const std::string& name);
+    void applySoundConfig();
     bool wantsContinuousFrames() const { return true; }
 
     AppWindow* open(AppKind k, const std::string& arg = "");
@@ -321,6 +326,9 @@ private:
     float battery_ = 1.0f;
     double batteryT_ = -100;
     double btT_ = -100;
+    std::atomic<bool> soundsReady_{false};
+    bool soundsConfigured_ = false;
+    bool volumeDrag_ = false;
     struct FileIcon {
         GLuint tex = 0;
         long long mtime = -1;

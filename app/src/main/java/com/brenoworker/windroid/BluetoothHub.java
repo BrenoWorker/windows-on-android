@@ -46,6 +46,11 @@ final class BluetoothHub {
     private final Map<String, Integer> battery = new ConcurrentHashMap<>();
     private volatile String message = "";
     private boolean registered;
+    private SoundFx sounds;
+
+    void setSounds(SoundFx s) {
+        sounds = s;
+    }
 
     private final BroadcastReceiver receiver = new BroadcastReceiver() {
         @Override
@@ -67,11 +72,11 @@ final class BluetoothHub {
                     }
                     break;
                 case BluetoothDevice.ACTION_ACL_CONNECTED:
-                    if (device != null) connected.add(device.getAddress());
+                    if (device != null && connected.add(device.getAddress()) && sounds != null) sounds.play("device-in");
                     break;
                 case BluetoothDevice.ACTION_ACL_DISCONNECTED:
                     if (device != null) {
-                        connected.remove(device.getAddress());
+                        if (connected.remove(device.getAddress()) && sounds != null) sounds.play("device-out");
                         battery.remove(device.getAddress());
                     }
                     break;

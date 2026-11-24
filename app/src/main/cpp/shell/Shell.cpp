@@ -6,6 +6,10 @@
 
 #include <sys/stat.h>
 
+#include <thread>
+
+#include "../core/Sound.h"
+
 #include "../apps/Apps.h"
 #include "Programs.h"
 #include "../core/Utf8.h"
@@ -50,6 +54,12 @@ void Shell::init() {
     ui_.th = &theme_;
     loadConfig();
     ensureFilesystem();
+    volume_ = cfg_.volume;
+    std::string soundDir = fs::join(plat_.dataDir, "sounds");
+    std::thread([this, soundDir]() {
+        writeSounds(soundDir);
+        soundsReady_ = true;
+    }).detach();
     theme_.build(cfg_.dark, rgb(kAccents[cfg_.accent % 8]));
     state_ = State::Boot;
     stateT_ = -1;
@@ -95,6 +105,8 @@ void Shell::loadConfig() {
         if (k == "scale") cfg_.scalePct = std::max(50, std::min(200, atoi(v.c_str())));
         if (k == "taskbarLeft") cfg_.taskbarLeft = v == "1";
         if (k == "user" && !v.empty()) cfg_.user = v;
+        if (k == "sounds") cfg_.sounds = v == "1";
+        if (k == "volume") cfg_.volume = std::max(0.f, std::min(1.f, (float)atof(v.c_str())));
     }
 }
 
@@ -106,6 +118,8 @@ void Shell::saveConfig() {
     s += "scale=" + std::to_string(cfg_.scalePct) + "\n";
     s += "taskbarLeft=" + std::string(cfg_.taskbarLeft ? "1" : "0") + "\n";
     s += "user=" + cfg_.user + "\n";
+    s += "sounds=" + std::string(cfg_.sounds ? "1" : "0") + "\n";
+    s += "volume=" + std::to_string(cfg_.volume) + "\n";
     fs::writeText(fs::join(plat_.dataDir, "config.ini"), s);
 }
 
@@ -312,6 +326,18 @@ void Shell::gamepad(int button, bool down) {
     }
 }
 
+void Shell::playSound(const std::string& name) {
+    if (!plat_.sys || !cfg_.sounds || !soundsConfigured_) return;
+    plat_.sys("snd.play", name);
+}
+
+void Shell::applySoundConfig() {
+    if (!plat_.sys) return;
+    char buf[32];
+    snprintf(buf, sizeof buf, "%s\t%.3f", cfg_.sounds ? "1" : "0", cfg_.volume);
+    plat_.sys("snd.config", buf);
+}
+
 void Shell::closeFlyouts() {
     startOpen_ = false;
     quickOpen_ = false;
@@ -515,6 +541,7 @@ void Shell::prompt(const std::string& title, const std::string& message, const s
 }
 
 void Shell::message(const std::string& title, const std::string& text) {
+    playSound("background");
     auto w = makeMessage(*this, title, text);
     w->shell = this;
     w->kind = AppKind::Dialog;
@@ -578,6 +605,7 @@ void Shell::toggleMaximize(AppWindow* w) {
 }
 
 void Shell::restart() {
+    playSound("shutdown");
     for (auto& w : windows_) {
         w->closing = true;
         w->anim = 0;
@@ -591,6 +619,7 @@ void Shell::restart() {
 }
 
 void Shell::shutdown() {
+    playSound("shutdown");
     closeFlyouts();
     ctxOpen_ = false;
     kbOpen_ = false;
@@ -735,6 +764,12 @@ void Shell::frame(double t) {
     ui_.time = t;
     ui_.dt = dt;
     iconLoads_ = 0;
+    if (!soundsConfigured_ && soundsReady_) {
+        soundsConfigured_ = true;
+        if (plat_.sys) plat_.sys("snd.reload", "");
+        applySoundConfig();
+        if (state_ == State::Lock && time_ - stateT_ < 1.5) playSound("startup");
+    }
     processInput();
 
     if (time_ - batteryT_ > 30) {
@@ -848,6 +883,7 @@ void Shell::drawBoot() {
         lockOffset_ = 0;
         unlocking_ = false;
         stateT_ = time_;
+        playSound("startup");
     }
 }
 
@@ -1000,6 +1036,7 @@ void Shell::drawSignIn(bool interactive, bool welcome) {
             state_ = State::Desktop;
             stateT_ = time_;
             deskFade_ = 0;
+            playSound("logon");
         }
     } else {
         Rect btn{W / 2 - 110, ny + 52, 220, 38};
@@ -1794,7 +1831,15 @@ void Shell::drawQuick(bool cap) {
     ui.slider({q.x + pad + 34, sy, q.w - pad * 2 - 40, 30}, brightness_);
     if (brightness_ < 0.15f) brightness_ = 0.15f;
     drawIcon(gfx_, IcGlyphVolume, {q.x + pad, sy + 46, 18, 18}, theme_.text);
-    ui.slider({q.x + pad + 34, sy + 40, q.w - pad * 2 - 40, 30}, volume_);
+    Rect volR{q.x + pad + 34, sy + 40, q.w - pad * 2 - 40, 30};
+    if (ui.slider(volR, volume_)) volumeDrag_ = true;
+    if (volumeDrag_ && (!ui.down || !ui.active)) {
+        volumeDrag_ = false;
+        cfg_.volume = volume_;
+        applySoundConfig();
+        saveConfig();
+        playSound("volume");
+    }
     Rect bar{q.x, q.b() - 48, q.w, 48};
     gfx_.pushClip(bar);
     gfx_.rect(q, theme_.dark ? rgb(0x000000, 0.12f) : rgb(0x000000, 0.03f), 8);

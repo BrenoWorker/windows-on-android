@@ -1,5 +1,7 @@
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
+#include <map>
 
 #include "Apps.h"
 #include "Common.h"
@@ -118,7 +120,7 @@ public:
             return;
         }
 
-        bool visible = exclusive && clipped.w > 8 && clipped.h > 8;
+        bool visible = exclusive && !dlOpen_ && clipped.w > 8 && clipped.h > 8;
         setLayout(page, clipped, visible);
 
         if (!visible) {
@@ -160,13 +162,16 @@ public:
             g.popClip();
         }
 
+        pollDownloads(ui);
+        if (dlOpen_ && !fsOn_) drawDownloads(ui, c, bar);
+
         if (st_.editable && !lastEditable_) {
             addrFocus_ = false;
             ui.requestKeyboard = true;
         }
         lastEditable_ = st_.editable;
 
-        if (ui.focus && !addrFocus_) {
+        if (ui.focus && !addrFocus_ && !dlOpen_) {
             std::string typed;
             for (uint32_t ch : ui.chars)
                 if (ch >= 32) utf8Append(typed, ch);
@@ -176,6 +181,179 @@ public:
     }
 
 private:
+    struct Dl {
+        int id = 0;
+        std::string name, path, state, error;
+        long long done = 0, total = -1, speed = 0;
+    };
+    static int lastSeenDl_;
+    std::vector<Dl> dls_;
+    double dlPollT_ = -10;
+    double dlToggleT_ = -10;
+    bool dlOpen_ = false;
+    bool dlUnseen_ = false;
+    float dlScroll_ = 0;
+    std::map<int, std::string> dlStates_;
+
+    static std::vector<std::string> splitTab(const std::string& s) {
+        std::vector<std::string> out;
+        size_t i = 0;
+        while (true) {
+            size_t j = s.find('\t', i);
+            out.push_back(s.substr(i, j == std::string::npos ? std::string::npos : j - i));
+            if (j == std::string::npos) break;
+            i = j + 1;
+        }
+        return out;
+    }
+
+    void pollDownloads(Ui& ui) {
+        if (!shell->platform().sys || ui.time - dlPollT_ < (dlOpen_ ? 0.25 : 0.6)) return;
+        dlPollT_ = ui.time;
+        std::string text = shell->sys("dl.list");
+        std::vector<Dl> list;
+        size_t i = 0;
+        while (i < text.size()) {
+            size_t j = text.find('\n', i);
+            if (j == std::string::npos) j = text.size();
+            auto f = splitTab(text.substr(i, j - i));
+            i = j + 1;
+            if (f.size() < 8) continue;
+            Dl d;
+            d.id = atoi(f[0].c_str());
+            d.name = f[1];
+            d.path = f[2];
+            d.state = f[3];
+            d.done = atoll(f[4].c_str());
+            d.total = atoll(f[5].c_str());
+            d.speed = atoll(f[6].c_str());
+            d.error = f[7];
+            list.push_back(d);
+        }
+        bool changed = false;
+        int newest = 0;
+        for (auto& d : list) {
+            newest = std::max(newest, d.id);
+            auto it = dlStates_.find(d.id);
+            if (it != dlStates_.end() && it->second != d.state && d.state == "done") changed = true;
+            if (it == dlStates_.end() && d.state == "done") changed = true;
+            dlStates_[d.id] = d.state;
+        }
+        if (changed) shell->notifyFs();
+        if (newest > lastSeenDl_) {
+            lastSeenDl_ = newest;
+            if (ui.focus || exclusive) {
+                dlOpen_ = true;
+                dlScroll_ = 0;
+            } else {
+                dlUnseen_ = true;
+            }
+        }
+        if (dlOpen_) dlUnseen_ = false;
+        dls_ = list;
+    }
+
+    static std::string eta(long long secs) {
+        if (secs < 60) return std::to_string(std::max(1LL, secs)) + " s left";
+        if (secs < 3600) return std::to_string(secs / 60) + " min left";
+        return std::to_string(secs / 3600) + " h left";
+    }
+
+    void drawDownloads(Ui& ui, const Rect& c, const Rect& bar) {
+        Gfx& g = *ui.g;
+        const Theme& th = *ui.th;
+        float w = std::min(380.f, c.w - 16);
+        float rowH = 66;
+        int visibleRows = std::max(1, std::min((int)dls_.size(), 5));
+        float listH = dls_.empty() ? 70.f : visibleRows * rowH;
+        float h = std::min(52 + listH + 8, c.b() - bar.b() - 12);
+        Rect panel{c.r() - w - 8, bar.b() + 4, w, h};
+        if (ui.pressed && !panel.contains(ui.x, ui.y) && ui.time - dlToggleT_ > 0.05 && !bar.contains(ui.x, ui.y)) {
+            dlOpen_ = false;
+            return;
+        }
+        g.shadow({panel.x, panel.y + 6, panel.w, panel.h}, 8, 22, th.shadow);
+        g.rect(panel, th.flyout, 8);
+        g.stroke(panel, alpha(th.text, 0.1f), 8, 1);
+        g.textBold(panel.x + 16, panel.y + 15, 14, "Downloads", th.text);
+        Rect closeB{panel.r() - 40, panel.y + 8, 32, 32};
+        Rect folderB{closeB.x - 34, panel.y + 8, 32, 32};
+        if (toolButton(ui, closeB, IcGlyphClose, "", false)) {
+            dlOpen_ = false;
+            return;
+        }
+        if (toolButton(ui, folderB, IcFolder, "", false)) {
+            shell->open(AppKind::Explorer, fs::join(shell->userDir(), "Downloads"));
+            dlOpen_ = false;
+            return;
+        }
+        bool anyFinished = false;
+        for (auto& d : dls_)
+            if (d.state != "running") anyFinished = true;
+        if (anyFinished) {
+            float cw = g.textWidth(12, "Clear") + 20;
+            if (ui.flatButton({folderB.x - cw - 4, panel.y + 10, cw, 28}, "Clear", 12)) shell->sys("dl.clear");
+        }
+        g.rect({panel.x, panel.y + 48, panel.w, 1}, alpha(th.text, 0.08f));
+        Rect list{panel.x, panel.y + 50, panel.w, panel.h - 54};
+        if (dls_.empty()) {
+            g.textIn({list.x, list.y + 18, list.w, 24}, 12.5f, "No recent downloads", th.textDim, AlignCenter);
+            return;
+        }
+        float contentH = dls_.size() * rowH;
+        if (ui.dragging(list)) dlScroll_ -= ui.dy();
+        dlScroll_ = clampf(dlScroll_, 0, std::max(0.f, contentH - list.h));
+        g.pushClip(list);
+        for (size_t i = 0; i < dls_.size(); i++) {
+            const Dl& d = dls_[i];
+            Rect row{list.x + 6, list.y + i * rowH - dlScroll_ + 2, list.w - 12, rowH - 4};
+            if (row.b() < list.y || row.y > list.b()) continue;
+            bool done = d.state == "done";
+            if (done) ui.pressFill(row, 5);
+            Rect ic{row.x + 10, row.y + 15, 32, 32};
+            shell->drawFileIcon(d.path, IcFile, ic, th.text);
+            float tx = row.x + 52;
+            Rect act{row.r() - 38, row.cy() - 16, 32, 32};
+            float tw = act.x - tx - 6;
+            Color nameC = (d.state == "failed" || d.state == "cancelled" || d.state == "deleted") ? th.textDim : th.text;
+            g.text(tx, row.y + 12, 12.5f, g.ellipsize(12.5f, d.name, tw), nameC);
+            std::string status;
+            if (d.state == "running") {
+                status = d.total > 0 ? fs::formatSize(d.done) + " of " + fs::formatSize(d.total) : fs::formatSize(d.done);
+                if (d.speed > 0) {
+                    status += ", " + fs::formatSize(d.speed) + "/s";
+                    if (d.total > 0) status += ", " + eta((d.total - d.done) / std::max(1LL, d.speed));
+                }
+                Rect pb{tx, row.y + 50, tw, 4};
+                g.rect(pb, alpha(th.text, 0.12f), 2);
+                if (d.total > 0) {
+                    g.rect({pb.x, pb.y, pb.w * clampf((float)d.done / d.total, 0, 1), pb.h}, th.accent, 2);
+                } else {
+                    float t = (float)fmod(ui.time * 0.8, 1.0);
+                    g.rect({pb.x + pb.w * t * 0.75f, pb.y, pb.w * 0.25f, pb.h}, th.accent, 2);
+                }
+                if (toolButton(ui, act, IcGlyphClose, "", false)) shell->sys("dl.cancel", std::to_string(d.id));
+            } else if (done) {
+                status = fs::formatSize(d.total > 0 ? d.total : d.done) + "  \xC2\xB7  Open file";
+                if (toolButton(ui, act, IcFolder, "", false)) {
+                    shell->open(AppKind::Explorer, fs::parent(d.path));
+                    dlOpen_ = false;
+                }
+                if (ui.clicked(row) && !act.contains(ui.x, ui.y)) {
+                    dlOpen_ = false;
+                    shell->openFile(d.path);
+                }
+            } else {
+                if (d.state == "cancelled") status = "Canceled";
+                else if (d.state == "deleted") status = "Deleted";
+                else status = "Failed" + (d.error.empty() ? std::string() : " - " + d.error);
+                if (d.state != "deleted" && toolButton(ui, act, IcGlyphRefresh, "", false)) shell->sys("dl.retry", std::to_string(d.id));
+            }
+            g.text(tx, row.y + 31, 11.5f, g.ellipsize(11.5f, status, tw), d.state == "failed" ? rgb(0xD13438) : th.textDim);
+        }
+        g.popClip();
+    }
+
     bool fsOn_ = false;
     bool fsMaximized_ = false;
 
@@ -214,6 +392,30 @@ private:
         float right = bar.r() - 6;
         Rect chromeBtn{right - 32, bar.y + 7, 32, 32};
         right -= 34;
+        if (!dls_.empty() || dlOpen_) {
+            Rect dlBtn{right - 32, bar.y + 7, 32, 32};
+            right -= 34;
+            if (toolButton(ui, dlBtn, IcGlyphDown, "", false, dlOpen_, true)) {
+                dlOpen_ = !dlOpen_;
+                dlToggleT_ = ui.time;
+                dlScroll_ = 0;
+            }
+            long long done = 0, total = 0;
+            int running = 0;
+            for (auto& d : dls_)
+                if (d.state == "running") {
+                    running++;
+                    done += d.done;
+                    total += d.total > 0 ? d.total : d.done + 1;
+                }
+            if (running > 0) {
+                float f = total > 0 ? (float)done / total : 0.f;
+                g.ring(dlBtn.cx(), dlBtn.cy(), 14, 1.5f, alpha(th.text, 0.15f));
+                g.arc(dlBtn.cx(), dlBtn.cy(), 14, -1.5708f, -1.5708f + 6.2832f * std::max(0.04f, f), 2, th.accent);
+            } else if (dlUnseen_) {
+                g.circle(dlBtn.r() - 6, dlBtn.y + 7, 4, th.accent);
+            }
+        }
         Rect deskBtn{right - 32, bar.y + 7, 32, 32};
         right -= 34;
         Rect padBtn{right - 32, bar.y + 7, 32, 32};
@@ -334,6 +536,8 @@ private:
         web_->layout(id_, lx_, ly_, w, h, false);
     }
 };
+
+int BrowserWindow::lastSeenDl_ = 0;
 
 std::unique_ptr<AppWindow> makeBrowser(Shell& s, const std::string& arg) { return std::make_unique<BrowserWindow>(s, arg); }
 

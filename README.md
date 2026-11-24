@@ -90,6 +90,14 @@ window.addEventListener("windroid", (e) => {
 
 Events are dispatched on `window` as `windroid` with `detail.type`: `pause` and `resume` when the window goes to the background or comes back, `fullscreen`, and `button` (with `id` and `down`; the D-pad reports `up`, `down`, `left` and `right`). Controls reset to the default layout when a new page loads.
 
+## Downloads
+
+Files downloaded in the Browser go to `C:\Users\User\Downloads`. A downloads button appears in the toolbar with a progress ring, and its flyout lists recent downloads with size, speed and time left, plus cancel, retry, open file and show in folder. Links, `data:` URLs and `blob:` URLs created by web apps (including the `<a download>` name) are supported.
+
+## Sounds
+
+WinDroid plays its own synthesized system sounds in the spirit of Windows 11: startup, sign in, shut down, notification, message, error, device connected and disconnected, and volume change. They are generated as WAV files on first launch (`core/Sound.cpp`) and can be turned off or tried in Settings > System > Sound. The volume slider in Quick Settings sets their volume.
+
 ## Bluetooth & devices
 
 Settings > Bluetooth & devices uses the real Android Bluetooth stack: turn Bluetooth on or off, see paired devices with their type, connection state and battery, search for nearby devices, pair, remove and rename. The Bluetooth tile in Quick Settings shows the real state (long press it to open the page). In File Explorer, select a file and use **Send** to share it over Bluetooth.

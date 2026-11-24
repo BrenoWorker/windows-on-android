@@ -148,6 +148,32 @@ private:
         g.text(x + w - 104, ty + 23, 12, nl ? "On" : "Off", th.text);
         y += 18;
 
+        g.textBold(x, y, 13, "Sound", th.text);
+        y += 26;
+        ty = y;
+        y = row(ui, x, y, w, IcGlyphVolume, "System sounds", "Play sounds for startup, sign in, notifications and devices");
+        bool snd = cfg.sounds;
+        if (ui.toggle({x + w - 64, ty + 22, 48, 20}, snd)) {
+            cfg.sounds = snd;
+            shell->saveConfig();
+            shell->applySoundConfig();
+            if (snd) shell->playSound("notify");
+        }
+        g.text(x + w - 104, ty + 23, 12, cfg.sounds ? "On" : "Off", th.text);
+        if (cfg.sounds) {
+            ty = y;
+            y = row(ui, x, y, w, IcGlyphVolume, "Try the sounds", "");
+            const char* names[] = {"startup", "notify", "error", "device-in"};
+            const char* labels[] = {"Startup", "Notify", "Error", "Device"};
+            float bw = 74;
+            for (int i = 0; i < 4; i++) {
+                Rect b{x + w - (4 - i) * (bw + 6) - 10, ty + 16, bw, 32};
+                if (b.x < x + 170) continue;
+                if (ui.button(b, labels[i])) shell->playSound(names[i]);
+            }
+        }
+        y += 18;
+
         g.textBold(x, y, 13, "Storage", th.text);
         y += 26;
         card(g, th, {x, y, w, 96});

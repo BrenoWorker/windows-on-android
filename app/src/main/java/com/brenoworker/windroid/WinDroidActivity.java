@@ -65,6 +65,10 @@ public class WinDroidActivity extends NativeActivity {
             + "if(ok&&(k.length==1||k=='Enter'))kev(t,'keypress',k);return ok;}"
             + "if(!held[k])return true;delete held[k];return kev(t,'keyup',k);};"
             + "window.__wdTap=function(k){var ok=window.__wdPad(k,true);window.__wdPad(k,false);return ok;};"
+            + "document.addEventListener('click',function(e){var a=e.target&&e.target.closest?e.target.closest('a[download]'):null;"
+            + "if(a)window.__wdDlName=a.getAttribute('download')||'';},true);"
+            + "try{var oc=HTMLAnchorElement.prototype.click;HTMLAnchorElement.prototype.click=function(){"
+            + "if(this.hasAttribute('download'))window.__wdDlName=this.getAttribute('download')||'';return oc.apply(this,arguments);};}catch(x){}"
             + "window.__wdEmit=function(d){try{window.dispatchEvent(new CustomEvent('windroid',{detail:d}));}catch(x){}};"
             + "var ed=function(e){if(!e)return false;if(e.isContentEditable)return true;"
             + "var t=(e.tagName||'').toUpperCase();if(t=='TEXTAREA')return !e.readOnly&&!e.disabled;"
@@ -117,6 +121,8 @@ public class WinDroidActivity extends NativeActivity {
     private WebView spare;
     private BluetoothHub bluetooth;
     private WinRuntime winRuntime;
+    private SoundFx sounds;
+    private Downloads downloads;
 
     private final class Browser {
         final int id;
@@ -176,6 +182,23 @@ public class WinDroidActivity extends NativeActivity {
         @JavascriptInterface
         public void focus(boolean editable) {
             browser.editable = editable;
+        }
+
+        @JavascriptInterface
+        public void saveDownload(String name, String dataUrl) {
+            if (downloads == null) return;
+            String n = name;
+            if (n == null || n.isEmpty()) {
+                String mime = null;
+                if (dataUrl != null && dataUrl.startsWith("data:")) {
+                    int end = dataUrl.indexOf(';');
+                    int comma = dataUrl.indexOf(',');
+                    int stop = end > 0 && (comma < 0 || end < comma) ? end : comma;
+                    if (stop > 5) mime = dataUrl.substring(5, stop);
+                }
+                n = android.webkit.URLUtil.guessFileName("download", null, mime);
+            }
+            downloads.saveDataUrl(n, dataUrl == null ? "" : dataUrl);
         }
 
         @JavascriptInterface
@@ -402,7 +425,15 @@ public class WinDroidActivity extends NativeActivity {
         }
         immersive();
         preferHighRefreshRate();
+        sounds = new SoundFx(this);
+        downloads = new Downloads(this, new Downloads.Listener() {
+            @Override
+            public void onFinished(boolean ok) {
+                sounds.play(ok ? "notify" : "error");
+            }
+        });
         bluetooth = new BluetoothHub(this);
+        bluetooth.setSounds(sounds);
         winRuntime = new WinRuntime(this);
         bluetooth.start();
         decor.postDelayed(new Runnable() {
@@ -553,6 +584,36 @@ public class WinDroidActivity extends NativeActivity {
                 }
                 return result[0];
             }
+            case "snd.play":
+                if (sounds != null) sounds.play(arg);
+                return "";
+            case "snd.config": {
+                String[] f = arg.split("\t", -1);
+                float vol = 0.8f;
+                try {
+                    vol = f.length > 1 ? Float.parseFloat(f[1]) : 0.8f;
+                } catch (NumberFormatException ignored) {
+                }
+                if (sounds != null) sounds.configure(f[0].equals("1"), vol);
+                return "";
+            }
+            case "snd.reload":
+                if (sounds != null) sounds.reload();
+                return "";
+            case "dl.list":
+                return downloads == null ? "" : downloads.list();
+            case "dl.cancel":
+                if (downloads != null) downloads.cancel(parseInt(arg));
+                return "";
+            case "dl.retry":
+                if (downloads != null) downloads.retry(parseInt(arg));
+                return "";
+            case "dl.remove":
+                if (downloads != null) downloads.remove(parseInt(arg));
+                return "";
+            case "dl.clear":
+                if (downloads != null) downloads.clear();
+                return "";
             case "rt.status":
                 return rt.status();
             case "rt.install":
@@ -627,6 +688,7 @@ public class WinDroidActivity extends NativeActivity {
     protected void onDestroy() {
         if (bluetooth != null) bluetooth.stop();
         if (winRuntime != null) winRuntime.stopSession();
+        if (sounds != null) sounds.release();
         for (Browser b : browsers.values()) release(b);
         browsers.clear();
         if (spare != null) {
@@ -716,6 +778,22 @@ public class WinDroidActivity extends NativeActivity {
         spare = null;
         b.defaultAgent = web.getSettings().getUserAgentString();
         web.addJavascriptInterface(new PageBridge(b), "WinDroid");
+        web.setDownloadListener(new android.webkit.DownloadListener() {
+            @Override
+            public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimetype, long contentLength) {
+                if (downloads == null || url == null) return;
+                if (url.startsWith("blob:")) {
+                    WebView w = b.web;
+                    if (w == null) return;
+                    w.evaluateJavascript("(function(u){var n=window.__wdDlName||'';window.__wdDlName='';"
+                            + "fetch(u).then(function(r){return r.blob();}).then(function(x){var f=new FileReader();"
+                            + "f.onload=function(){WinDroid.saveDownload(n,f.result);};f.readAsDataURL(x);})"
+                            + ".catch(function(){WinDroid.saveDownload(n,'');});})(" + JSONObject.quote(url) + ")", null);
+                    return;
+                }
+                downloads.start(url, userAgent, contentDisposition, mimetype, b.url, null);
+            }
+        });
         web.setWebViewClient(new WebViewClient() {
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
