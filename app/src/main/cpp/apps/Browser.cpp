@@ -105,59 +105,166 @@ static std::string displayUrl(const std::string& url) {
     return u;
 }
 
+struct BrowserTab {
+    int id_ = -1;
+    bool ntp = false;
+    std::string pending;
+    WebState st_;
+    GLuint tex_ = 0;
+    int texW_ = 0, texH_ = 0;
+    int lx_ = -1, ly_ = -1, lw_ = -1, lh_ = -1;
+    int hw_ = 0, hh_ = 0;
+    bool lvis_ = false;
+    bool laidOut_ = false;
+    bool pendingClip_ = false;
+    Rect visPage_, visClip_;
+    float snapX_ = 0, snapY_ = 0, snapW_ = 0, snapH_ = 0;
+    double refreshT_ = 0;
+    bool lastEditable_ = false;
+};
+
 class BrowserWindow : public AppWindow {
 public:
-    BrowserWindow(Shell& s, const std::string& arg) : web_(s.platform().web), start_(arg) {
-        prefW = 900;
-        prefH = 560;
+    BrowserWindow(Shell& s, const std::string& arg) : web_(s.platform().web) {
+        prefW = 960;
+        prefH = 600;
         minW = 360;
         minH = 260;
+        titleH = 40;
         title = "New tab - Browser";
+        addTab(arg);
     }
 
     ~BrowserWindow() override {
-        if (web_ && id_ >= 0) web_->destroy(id_);
-        if (tex_ && shell) shell->gfx().deleteTexture(tex_);
+        for (auto& t : tabs_) {
+            if (web_ && t->id_ >= 0) web_->destroy(t->id_);
+            if (t->tex_ && shell) shell->gfx().deleteTexture(t->tex_);
+        }
     }
 
     bool wantsText() const override { return true; }
+    bool customTitle() const override { return true; }
+
+    Color titleColor(const Theme& th, bool focused) const override {
+        if (th.dark) return focused ? rgb(0x1A1A1A) : rgb(0x242424);
+        return focused ? rgb(0xE4E7EB) : rgb(0xEFEFEF);
+    }
+
+    bool titleHit(const Rect& bar, float x, float y) override {
+        TabLayout L = tabLayout(bar);
+        if (L.plus.contains(x, y)) return true;
+        for (auto& r : L.tabs)
+            if (r.contains(x, y)) return true;
+        return false;
+    }
+
+    void drawTitle(Ui& ui, const Rect& bar, bool focused) override {
+        Gfx& g = *ui.g;
+        const Theme& th = *ui.th;
+        TabLayout L = tabLayout(bar);
+        int closeIdx = -1, pick = -1;
+        for (size_t i = 0; i < tabs_.size(); i++) {
+            Rect r = L.tabs[i];
+            BrowserTab& t = *tabs_[i];
+            bool active = (int)i == cur_;
+            if (active) {
+                g.rect(r, th.mica, 8);
+                g.rect({r.x, r.b() - 8, r.w, 8}, th.mica);
+                g.rect({r.x - 8, r.b() - 8, 8, 8}, th.mica);
+                g.rect({r.r(), r.b() - 8, 8, 8}, th.mica);
+                Color tb = titleColor(th, focused);
+                g.circle(r.x - 8, r.b() - 8, 8, tb);
+                g.circle(r.r() + 8, r.b() - 8, 8, tb);
+            } else {
+                if (ui.held(r)) g.rect(r.inset(2, 4), alpha(th.text, 0.08f), 6);
+                if ((int)i + 1 != cur_ && i + 1 < tabs_.size()) g.rect({r.r() - 0.5f, r.y + 10, 1, r.h - 18}, alpha(th.text, 0.18f));
+            }
+            Rect ic{r.x + 12, r.cy() - 8, 16, 16};
+            if (t.st_.loading && t.id_ >= 0) {
+                float a = (float)fmod(ui.time * 1.6, 1.0) * 6.2832f;
+                g.arc(ic.cx(), ic.cy(), 6.5f, a, a + 4.3f, 1.8f, th.accent);
+            } else if (t.ntp) {
+                drawIcon(g, IcBrowser, ic, th.text);
+            } else {
+                drawIcon(g, IcGlyphGlobe, ic, active ? th.text : th.textDim);
+            }
+            bool showClose = active || r.w > 110;
+            float textW = r.w - 40 - (showClose ? 30 : 0);
+            Color tc = active ? th.text : th.textDim;
+            if (!focused) tc = alpha(tc, 0.8f);
+            g.textIn({r.x + 36, r.y, textW, r.h}, 12, g.ellipsize(12, tabTitle(t), textW), tc);
+            if (showClose) {
+                Rect x{r.r() - 32, r.cy() - 13, 26, 26};
+                if (ui.held(x)) g.rect(x, alpha(th.text, 0.12f), 5);
+                g.line(x.cx() - 4.5f, x.cy() - 4.5f, x.cx() + 4.5f, x.cy() + 4.5f, 1.1f, tc);
+                g.line(x.cx() + 4.5f, x.cy() - 4.5f, x.cx() - 4.5f, x.cy() + 4.5f, 1.1f, tc);
+                if (ui.clicked(x)) closeIdx = (int)i;
+                else if (ui.clicked(r)) pick = (int)i;
+            } else if (ui.clicked(r)) {
+                pick = (int)i;
+            }
+        }
+        if (ui.held(L.plus)) g.rect(L.plus, alpha(th.text, 0.1f), 6);
+        drawIcon(g, IcGlyphPlus, L.plus.centered(14, 14), th.text);
+        if (ui.clicked(L.plus)) addTab("");
+        if (pick >= 0) selectTab(pick);
+        if (closeIdx >= 0) closeTab(closeIdx);
+    }
 
     bool onBack() override {
-        if (web_ && id_ >= 0 && st_.fullscreen) {
-            web_->action(id_, WebExitFullscreen);
+        if (web_ && t_->id_ >= 0 && t_->st_.fullscreen) {
+            web_->action(t_->id_, WebExitFullscreen);
             return true;
         }
-        if (web_ && id_ >= 0 && st_.canBack) {
-            web_->action(id_, WebBack);
+        if (extOpen_ || dlOpen_) {
+            extOpen_ = dlOpen_ = false;
+            return true;
+        }
+        if (web_ && t_->id_ >= 0 && t_->st_.canBack) {
+            web_->action(t_->id_, WebBack);
+            return true;
+        }
+        if (tabs_.size() > 1) {
+            closeTab(cur_);
             return true;
         }
         return false;
     }
 
     bool gamepad(int button, bool down) override {
-        if (!web_ || id_ < 0 || addrFocus_) return false;
-        if (button == PadB && !st_.fullscreen && !st_.controls) return false;
-        web_->gamepad(id_, button, down);
+        if (!web_ || t_->id_ < 0 || addrFocus_) return false;
+        if (button == PadB && !t_->st_.fullscreen && !t_->st_.controls) return false;
+        web_->gamepad(t_->id_, button, down);
         return true;
     }
 
-    void hidden() override { setLayout({0, 0, 0, 0}, {0, 0, 0, 0}, false); }
+    void hidden() override {
+        BrowserTab* keep = t_;
+        for (auto& t : tabs_) {
+            t_ = t.get();
+            setLayout({0, 0, 0, 0}, {0, 0, 0, 0}, false);
+        }
+        t_ = keep;
+    }
 
     void draw(Ui& ui, const Rect& c) override {
         Gfx& g = *ui.g;
         const Theme& th = *ui.th;
-        if (web_ && id_ < 0) {
-            id_ = web_->create();
-            web_->load(id_, normalizeUrl(start_));
+        if (web_ && t_->id_ < 0 && !t_->pending.empty()) {
+            t_->id_ = web_->create();
+            web_->load(t_->id_, t_->pending);
+            t_->pending.clear();
+            t_->ntp = false;
         }
-        if (web_ && id_ >= 0) st_ = web_->state(id_);
-        std::string pageTitle = st_.title.empty() ? (st_.url.empty() ? "New tab" : displayUrl(st_.url)) : st_.title;
-        title = pageTitle + " - Browser";
+        if (web_ && t_->id_ >= 0) t_->st_ = web_->state(t_->id_);
+        for (auto& t : tabs_)
+            if (t.get() != t_ && web_ && t->id_ >= 0) t->st_ = web_->state(t->id_);
+        title = tabTitle(*t_) + " - Browser";
 
         syncFullscreen();
         g.rect(c, th.mica);
-        Rect bar{c.x, c.y, c.w, fsOn_ ? 0.f : 46.f};
-        bool hasWeb = web_ && id_ >= 0;
+        Rect bar{c.x, c.y, c.w, fsOn_ ? 0.f : 50.f};
+        bool hasWeb = web_ && t_->id_ >= 0;
         if (!fsOn_) drawToolbar(ui, bar, hasWeb);
 
         Rect page{c.x, bar.b(), c.w, c.h - bar.h};
@@ -165,12 +272,23 @@ public:
         Rect clipped = page.intersect(shell->workArea());
         g.rect(page, rgb(0xFFFFFF));
 
-        if (!hasWeb) {
+        if (!web_) {
             drawIcon(g, IcBrowser, {page.cx() - 32, page.cy() - 70, 64, 64}, th.text);
             g.textIn({page.x, page.cy() + 6, page.w, 24}, 15, "The browser engine is only available on Android.", rgb(0x333333),
                      AlignCenter);
             g.textIn({page.x, page.cy() + 32, page.w, 20}, 12, "It uses Android System WebView, powered by Chromium.",
                      rgb(0x777777), AlignCenter);
+            return;
+        }
+
+        if (!hasWeb) {
+            pollExt(ui);
+            bool modal = extModal();
+            drawNewTab(ui, page, !dlOpen_ && !extOpen_ && !modal);
+            pollDownloads(ui);
+            if (dlOpen_) drawDownloads(ui, c, bar);
+            if (extOpen_ && !modal) drawExtensions(ui, c, bar);
+            if (modal) drawExtModal(ui, page);
             return;
         }
 
@@ -180,43 +298,43 @@ public:
         setLayout(page, clipped, visible);
 
         if (!visible) {
-            double every = st_.loading ? 1.0 : 2.5;
-            if (ui.time - refreshT_ > every && laidOut_ && !lvis_) {
-                refreshT_ = ui.time;
-                web_->action(id_, WebCapture);
+            double every = t_->st_.loading ? 1.0 : 2.5;
+            if (ui.time - t_->refreshT_ > every && t_->laidOut_ && !t_->lvis_) {
+                t_->refreshT_ = ui.time;
+                web_->action(t_->id_, WebCapture);
             }
             std::vector<unsigned char> px;
             int w = 0, h = 0;
-            if (web_->snapshot(id_, px, w, h) && w > 0 && h > 0) {
-                if (tex_ && (texW_ != w || texH_ != h)) {
-                    g.deleteTexture(tex_);
-                    tex_ = 0;
+            if (web_->snapshot(t_->id_, px, w, h) && w > 0 && h > 0) {
+                if (t_->tex_ && (t_->texW_ != w || t_->texH_ != h)) {
+                    g.deleteTexture(t_->tex_);
+                    t_->tex_ = 0;
                 }
-                if (!tex_)
-                    tex_ = g.createTexture(w, h, px.data());
+                if (!t_->tex_)
+                    t_->tex_ = g.createTexture(w, h, px.data());
                 else
-                    g.updateTexture(tex_, w, h, px.data());
-                texW_ = w;
-                texH_ = h;
+                    g.updateTexture(t_->tex_, w, h, px.data());
+                t_->texW_ = w;
+                t_->texH_ = h;
                 float s = g.scale();
-                if (pendingClip_ && w == lw_ && h == lh_) {
-                    snapW_ = visPage_.w;
-                    snapH_ = visPage_.h;
-                    snapX_ = visClip_.x - visPage_.x;
-                    snapY_ = visClip_.y - visPage_.y;
+                if (t_->pendingClip_ && w == t_->lw_ && h == t_->lh_) {
+                    t_->snapW_ = t_->visPage_.w;
+                    t_->snapH_ = t_->visPage_.h;
+                    t_->snapX_ = t_->visClip_.x - t_->visPage_.x;
+                    t_->snapY_ = t_->visClip_.y - t_->visPage_.y;
                 } else {
-                    snapW_ = w / s;
-                    snapH_ = h / s;
-                    snapX_ = 0;
-                    snapY_ = 0;
+                    t_->snapW_ = w / s;
+                    t_->snapH_ = h / s;
+                    t_->snapX_ = 0;
+                    t_->snapY_ = 0;
                 }
-                pendingClip_ = false;
+                t_->pendingClip_ = false;
             }
             g.pushClip(page);
-            if (tex_ && snapW_ > 0 && snapH_ > 0) {
+            if (t_->tex_ && t_->snapW_ > 0 && t_->snapH_ > 0) {
                 float s = g.scale();
-                float k = std::max(page.w / snapW_, page.h / snapH_);
-                g.image(tex_, {page.x + snapX_ * k, page.y + snapY_ * k, texW_ / s * k, texH_ / s * k});
+                float k = std::max(page.w / t_->snapW_, page.h / t_->snapH_);
+                g.image(t_->tex_, {page.x + t_->snapX_ * k, page.y + t_->snapY_ * k, t_->texW_ / s * k, t_->texH_ / s * k});
             } else {
                 drawPlaceholder(g, th, page);
             }
@@ -228,18 +346,18 @@ public:
         if (extOpen_ && !fsOn_ && !modal) drawExtensions(ui, c, bar);
         if (modal) drawExtModal(ui, page);
 
-        if (st_.editable && !lastEditable_) {
+        if (t_->st_.editable && !t_->lastEditable_) {
             addrFocus_ = false;
             ui.requestKeyboard = true;
         }
-        lastEditable_ = st_.editable;
+        t_->lastEditable_ = t_->st_.editable;
 
         if (ui.focus && !addrFocus_ && !dlOpen_ && !extOpen_ && !modal) {
             std::string typed;
             for (uint32_t ch : ui.chars)
                 if (ch >= 32) utf8Append(typed, ch);
-            if (!typed.empty()) web_->text(id_, typed);
-            for (int k : ui.keys) web_->key(id_, k);
+            if (!typed.empty()) web_->text(t_->id_, typed);
+            for (int k : ui.keys) web_->key(t_->id_, k);
         }
     }
 
@@ -490,18 +608,26 @@ private:
         }
         if (ui.time - extTakeT_ > 0.5) {
             extTakeT_ = ui.time;
-            std::string text = shell->sys("ext.take", std::to_string(id_));
+            std::string ids;
+            for (auto& t : tabs_)
+                if (t->id_ >= 0) ids += (ids.empty() ? "" : ",") + std::to_string(t->id_);
+            std::string text = shell->sys("ext.take", ids.empty() ? "-1" : ids);
             size_t i = 0;
-            bool closeMe = false;
+            std::vector<int> closing;
             while (i < text.size()) {
                 size_t j = text.find('\n', i);
                 if (j == std::string::npos) j = text.size();
                 auto f = splitTab(text.substr(i, j - i));
                 i = j + 1;
-                if (f.size() >= 2 && f[0] == "open" && !f[1].empty()) shell->open(AppKind::Browser, f[1]);
-                else if (!f.empty() && f[0] == "close") closeMe = true;
+                if (f.size() >= 2 && f[0] == "open" && !f[1].empty()) addTab(f[1]);
+                else if (f.size() >= 2 && f[0] == "close") closing.push_back(atoi(f[1].c_str()));
             }
-            if (closeMe) shell->close(this);
+            for (int id : closing)
+                for (size_t k = 0; k < tabs_.size(); k++)
+                    if (tabs_[k]->id_ == id) {
+                        closeTab((int)k);
+                        break;
+                    }
         }
     }
 
@@ -541,7 +667,7 @@ private:
     void drawExtensions(Ui& ui, const Rect& c, const Rect& bar) {
         Gfx& g = *ui.g;
         const Theme& th = *ui.th;
-        std::string store = cwsId(st_.url);
+        std::string store = cwsId(t_->st_.url);
         bool storeInstalled = false;
         for (auto& e : exts_)
             if (e.id == store) storeInstalled = true;
@@ -578,7 +704,7 @@ private:
                 Rect addB{card.r() - bw - 9, card.cy() - 15, bw, 30};
                 g.textIn({card.x + 14, card.y, addB.x - card.x - 20, card.h}, 12.5f,
                          g.ellipsize(12.5f, "Get this extension", addB.x - card.x - 20), th.text);
-                if (ui.button(addB, "Add to WinDroid", true)) shell->sys("ext.install", st_.url);
+                if (ui.button(addB, "Add to WinDroid", true)) shell->sys("ext.install", t_->st_.url);
             }
             y += cardH;
         }
@@ -588,7 +714,7 @@ private:
         float sw = g.textWidth(12.5f, "Chrome Web Store") + 44;
         Rect storeB{foot.x + 8, foot.y + 9, sw, 32};
         if (toolButton(ui, storeB, IcGlyphGlobe, "Chrome Web Store", true)) {
-            web_->load(id_, "https://chromewebstore.google.com/category/extensions");
+            navigate("https://chromewebstore.google.com/category/extensions");
             extOpen_ = false;
             return;
         }
@@ -649,7 +775,7 @@ private:
             if (e.enabled && ui.clicked(row) && !controls.contains(ui.x, ui.y)) {
                 int right = (int)std::lround(extBtn_.r() * scale);
                 int top = (int)std::lround((bar.b() + 2) * scale);
-                shell->sys("ext.popup", e.id + "\t" + std::to_string(id_) + "\t" + std::to_string(right) + "\t" + std::to_string(top));
+                shell->sys("ext.popup", e.id + "\t" + std::to_string(t_->id_) + "\t" + std::to_string(right) + "\t" + std::to_string(top));
                 extOpen_ = false;
             }
         }
@@ -749,11 +875,10 @@ private:
 
     bool fsOn_ = false;
     bool fsMaximized_ = false;
-    double refreshT_ = 0;
 
     void syncFullscreen() {
-        if (st_.fullscreen == fsOn_) return;
-        fsOn_ = st_.fullscreen;
+        if (t_->st_.fullscreen == fsOn_) return;
+        fsOn_ = t_->st_.fullscreen;
         if (fsOn_) {
             addrFocus_ = false;
             fsMaximized_ = !maximized;
@@ -768,27 +893,27 @@ private:
         Gfx& g = *ui.g;
         const Theme& th = *ui.th;
         float x = bar.x + 6;
-        if (toolButton(ui, {x, bar.y + 7, 32, 32}, IcGlyphBack, "", false, false, hasWeb && st_.canBack)) web_->action(id_, WebBack);
-        x += 34;
-        if (toolButton(ui, {x, bar.y + 7, 32, 32}, IcGlyphForward, "", false, false, hasWeb && st_.canForward))
-            web_->action(id_, WebForward);
-        x += 34;
-        if (st_.loading) {
-            if (toolButton(ui, {x, bar.y + 7, 32, 32}, IcGlyphClose, "", false, false, hasWeb)) web_->action(id_, WebStop);
+        if (toolButton(ui, {x, bar.y + 7, 36, 36}, IcGlyphBack, "", false, false, hasWeb && t_->st_.canBack)) web_->action(t_->id_, WebBack);
+        x += 38;
+        if (toolButton(ui, {x, bar.y + 7, 36, 36}, IcGlyphForward, "", false, false, hasWeb && t_->st_.canForward))
+            web_->action(t_->id_, WebForward);
+        x += 38;
+        if (t_->st_.loading) {
+            if (toolButton(ui, {x, bar.y + 7, 36, 36}, IcGlyphClose, "", false, false, hasWeb)) web_->action(t_->id_, WebStop);
         } else {
-            if (toolButton(ui, {x, bar.y + 7, 32, 32}, IcGlyphRefresh, "", false, false, hasWeb)) web_->action(id_, WebReload);
+            if (toolButton(ui, {x, bar.y + 7, 36, 36}, IcGlyphRefresh, "", false, false, hasWeb)) web_->action(t_->id_, WebReload);
         }
-        x += 34;
+        x += 38;
         if (bar.w > 520) {
-            if (toolButton(ui, {x, bar.y + 7, 32, 32}, IcGlyphHome, "", false, false, hasWeb)) web_->load(id_, kHome);
-            x += 34;
+            if (toolButton(ui, {x, bar.y + 7, 36, 36}, IcGlyphHome, "", false, false, true)) navigate(kHome);
+            x += 38;
         }
         float right = bar.r() - 6;
-        Rect chromeBtn{right - 32, bar.y + 7, 32, 32};
-        right -= 34;
+        Rect chromeBtn{right - 36, bar.y + 7, 36, 36};
+        right -= 38;
         if (!dls_.empty() || dlOpen_) {
-            Rect dlBtn{right - 32, bar.y + 7, 32, 32};
-            right -= 34;
+            Rect dlBtn{right - 36, bar.y + 7, 36, 36};
+            right -= 38;
             if (toolButton(ui, dlBtn, IcGlyphDown, "", false, dlOpen_, true)) {
                 dlOpen_ = !dlOpen_;
                 if (dlOpen_) extOpen_ = false;
@@ -811,17 +936,17 @@ private:
                 g.circle(dlBtn.r() - 6, dlBtn.y + 7, 4, th.accent);
             }
         }
-        Rect deskBtn{right - 32, bar.y + 7, 32, 32};
-        right -= 34;
-        extBtn_ = Rect{right - 32, bar.y + 7, 32, 32};
-        right -= 34;
+        Rect deskBtn{right - 36, bar.y + 7, 36, 36};
+        right -= 38;
+        extBtn_ = Rect{right - 36, bar.y + 7, 36, 36};
+        right -= 38;
         bool showPad = bar.w >= 480;
-        Rect padBtn{right - 32, bar.y + 7, 32, 32};
-        if (showPad) right -= 34;
+        Rect padBtn{right - 36, bar.y + 7, 36, 36};
+        if (showPad) right -= 38;
         right -= 4;
-        if (toolButton(ui, chromeBtn, IcGlyphExternal, "", false, false, hasWeb)) web_->action(id_, WebOpenInChrome);
-        if (toolButton(ui, deskBtn, IcGlyphMonitor, "", false, st_.desktop, hasWeb)) web_->action(id_, WebToggleDesktop);
-        if (toolButton(ui, extBtn_, IcGlyphPuzzle, "", false, extOpen_, hasWeb)) {
+        if (toolButton(ui, chromeBtn, IcGlyphExternal, "", false, false, hasWeb)) web_->action(t_->id_, WebOpenInChrome);
+        if (toolButton(ui, deskBtn, IcGlyphMonitor, "", false, t_->st_.desktop, hasWeb)) web_->action(t_->id_, WebToggleDesktop);
+        if (toolButton(ui, extBtn_, IcGlyphPuzzle, "", false, extOpen_, true)) {
             if (extOpen_) extOpen_ = false;
             else openExtPanel(ui);
         }
@@ -829,50 +954,173 @@ private:
         for (auto& e : exts_)
             if (e.enabled && !e.badge.empty()) anyBadge = true;
         if (anyBadge && !extOpen_) g.circle(extBtn_.r() - 6, extBtn_.y + 7, 4, th.accent);
-        if (showPad && toolButton(ui, padBtn, IcGlyphGamepad, "", false, st_.controls, hasWeb)) web_->action(id_, WebToggleControls);
+        if (showPad && toolButton(ui, padBtn, IcGlyphGamepad, "", false, t_->st_.controls, hasWeb)) web_->action(t_->id_, WebToggleControls);
 
-        Rect addr{x + 4, bar.y + 7, right - x - 4, 32};
-        if (!addrFocus_) addrEdit_.set(displayUrl(st_.url));
+        Rect addr{x + 4, bar.y + 7, right - x - 4, 36};
+        if (!addrFocus_) addrEdit_.set(hasWeb ? displayUrl(t_->st_.url) : std::string());
         bool wasFocus = addrFocus_;
-        bool secure = st_.url.rfind("https://", 0) == 0;
-        if (ui.lineEdit(addr, addrEdit_, addrFocus_, "Search Google or type a URL", 13, 22)) {
+        bool secure = t_->st_.url.rfind("https://", 0) == 0;
+        if (ui.lineEdit(addr, addrEdit_, addrFocus_, "Search Google or type a URL", 13.5f, 22, 18)) {
             std::string typed = trim(addrEdit_.text);
             if (typed == "chrome://extensions" || typed == "windroid://extensions" || typed == "chrome://extensions/") {
                 openExtPanel(ui);
-            } else if (hasWeb) {
-                web_->load(id_, normalizeUrl(addrEdit_.text));
+            } else if (!typed.empty()) {
+                navigate(normalizeUrl(typed));
             }
             addrFocus_ = false;
         }
         if (!wasFocus && addrFocus_) {
-            addrEdit_.set(st_.url);
+            addrEdit_.set(t_->st_.url);
         }
         if (addrFocus_ && ui.pressed && !addr.contains(ui.x, ui.y)) addrFocus_ = false;
-        drawIcon(g, secure ? IcGlyphLock : IcGlyphGlobe, {addr.x + 9, addr.cy() - 6.5f, 13, 13}, th.textDim);
+        drawIcon(g, secure ? IcGlyphLock : (hasWeb ? IcGlyphGlobe : IcGlyphSearch), {addr.x + 12, addr.cy() - 6.5f, 13, 13}, th.textDim);
 
         g.rect({bar.x, bar.b() - 1, bar.w, 1}, th.border);
-        if (st_.loading && st_.progress < 100) {
-            float p = std::max(0.05f, st_.progress / 100.0f);
+        if (t_->st_.loading && t_->st_.progress < 100) {
+            float p = std::max(0.05f, t_->st_.progress / 100.0f);
             g.rect({bar.x, bar.b() - 2, bar.w * p, 2}, th.accent);
         }
     }
 
     std::shared_ptr<WebBridge> web_;
-    std::string start_;
-    int id_ = -1;
-    WebState st_;
     LineEdit addrEdit_;
     bool addrFocus_ = false;
-    bool lastEditable_ = false;
-    GLuint tex_ = 0;
-    int texW_ = 0, texH_ = 0;
-    int lx_ = -1, ly_ = -1, lw_ = -1, lh_ = -1;
-    int hw_ = 0, hh_ = 0;
-    bool lvis_ = false;
-    bool laidOut_ = false;
-    bool pendingClip_ = false;
-    Rect visPage_, visClip_;
-    float snapX_ = 0, snapY_ = 0, snapW_ = 0, snapH_ = 0;
+    std::vector<std::unique_ptr<BrowserTab>> tabs_;
+    BrowserTab* t_ = nullptr;
+    int cur_ = 0;
+    LineEdit ntpEdit_;
+    bool ntpFocus_ = false;
+
+    struct TabLayout {
+        std::vector<Rect> tabs;
+        Rect plus;
+    };
+
+    TabLayout tabLayout(const Rect& bar) const {
+        TabLayout L;
+        float x = bar.x + 8;
+        float avail = bar.w - 8 - 48;
+        float w = tabs_.empty() ? 200.f : clampf(avail / tabs_.size(), 56, 240);
+        for (size_t i = 0; i < tabs_.size(); i++) L.tabs.push_back({x + i * w, bar.y + 6, w, bar.h - 6});
+        float px = x + tabs_.size() * w + 4;
+        L.plus = {std::min(px, bar.r() - 40), bar.y + 7, 34, bar.h - 12};
+        return L;
+    }
+
+    static std::string tabTitle(const BrowserTab& t) {
+        if (t.id_ < 0) return t.pending.empty() ? "New tab" : displayUrl(t.pending);
+        if (!t.st_.title.empty()) return t.st_.title;
+        return t.st_.url.empty() ? "New tab" : displayUrl(t.st_.url);
+    }
+
+    void addTab(const std::string& url) {
+        auto t = std::make_unique<BrowserTab>();
+        std::string u = trim(url);
+        if (u.empty() || u == "about:newtab" || u == "chrome://newtab") t->ntp = true;
+        else t->pending = normalizeUrl(u);
+        tabs_.push_back(std::move(t));
+        selectTab((int)tabs_.size() - 1);
+    }
+
+    void selectTab(int i) {
+        if (i < 0 || i >= (int)tabs_.size()) return;
+        if (t_ && t_ != tabs_[i].get()) setLayout({0, 0, 0, 0}, {0, 0, 0, 0}, false);
+        cur_ = i;
+        t_ = tabs_[i].get();
+        addrFocus_ = false;
+        ntpFocus_ = false;
+        t_->lastEditable_ = false;
+    }
+
+    void closeTab(int i) {
+        if (i < 0 || i >= (int)tabs_.size()) return;
+        if (tabs_.size() == 1) {
+            shell->close(this);
+            return;
+        }
+        BrowserTab* t = tabs_[i].get();
+        if (web_ && t->id_ >= 0) web_->destroy(t->id_);
+        if (t->tex_ && shell) shell->gfx().deleteTexture(t->tex_);
+        bool wasCur = i == cur_;
+        tabs_.erase(tabs_.begin() + i);
+        if (wasCur) {
+            t_ = nullptr;
+            selectTab(std::min(i, (int)tabs_.size() - 1));
+        } else {
+            if (i < cur_) cur_--;
+            t_ = tabs_[cur_].get();
+        }
+    }
+
+    void navigate(const std::string& url) {
+        if (!web_) return;
+        if (t_->id_ < 0) {
+            t_->pending = url;
+            return;
+        }
+        t_->ntp = false;
+        web_->load(t_->id_, url);
+    }
+
+    struct Shortcut {
+        const char* name;
+        const char* url;
+        unsigned color;
+    };
+
+    void drawNewTab(Ui& ui, const Rect& page, bool interactive) {
+        Gfx& g = *ui.g;
+        const Theme& th = *ui.th;
+        if (th.dark) g.rectV(page, rgb(0x1B2330), rgb(0x1C1C1C));
+        else g.rectV(page, rgb(0xE8F0FB), rgb(0xFAFAFA));
+        g.pushClip(page);
+        float w = std::min(640.f, page.w - 48);
+        float top = page.y + std::max(28.f, page.h * 0.2f);
+        g.textIn({page.x, top, page.w, 30}, 24, "What can I help you find?", th.text, AlignCenter);
+        Rect box{page.cx() - w / 2, top + 48, w, 50};
+        g.shadow({box.x, box.y + 4, box.w, box.h}, 25, 16, alpha(th.shadow, 0.5f));
+        bool f = ntpFocus_ && interactive;
+        if (interactive) {
+            if (ui.lineEdit(box, ntpEdit_, ntpFocus_, "Search the web or type a URL", 15, 30, 25)) {
+                std::string typed = trim(ntpEdit_.text);
+                if (!typed.empty()) navigate(normalizeUrl(typed));
+                ntpEdit_.set("");
+                ntpFocus_ = false;
+            }
+            if (ntpFocus_ && ui.pressed && !box.contains(ui.x, ui.y)) ntpFocus_ = false;
+        } else {
+            g.rect(box, th.control, 25);
+        }
+        drawIcon(g, IcGlyphSearch, {box.x + 18, box.cy() - 8, 16, 16}, f ? th.accent : th.textDim);
+        static const Shortcut items[] = {
+            {"Google", "https://www.google.com/", 0x4285F4}, {"YouTube", "https://m.youtube.com/", 0xFF0000},
+            {"Wikipedia", "https://www.wikipedia.org/", 0x636466}, {"GitHub", "https://github.com/", 0x24292F},
+            {"Web Store", "https://chromewebstore.google.com/", 0x188038}, {"Gmail", "https://mail.google.com/", 0xD93025},
+            {"Maps", "https://maps.google.com/", 0x34A853}, {"Translate", "https://translate.google.com/", 0x1A73E8},
+        };
+        int n = 8;
+        float tile = 96;
+        int cols = std::max(2, std::min(n, (int)((page.w - 32) / tile)));
+        if (cols > 4 && cols < n) cols = 4;
+        int rows = (n + cols - 1) / cols;
+        float gx = page.cx() - cols * tile / 2;
+        float gy = box.b() + 36;
+        for (int i = 0; i < n; i++) {
+            Rect r{gx + (i % cols) * tile, gy + (i / cols) * (tile + 8), tile, tile};
+            if (r.b() > page.b()) break;
+            if (interactive && ui.held(r)) g.rect(r.inset(4), alpha(th.text, 0.08f), 8);
+            Rect ic{r.cx() - 24, r.y + 12, 48, 48};
+            g.rect(ic, th.dark ? rgb(0x2C2C2C) : rgb(0xFFFFFF), 12);
+            g.stroke(ic, alpha(th.text, 0.08f), 12, 1);
+            Rect dot = ic.centered(30, 30);
+            g.rect(dot, rgb(items[i].color), 15);
+            g.textIn(dot, 15, firstGlyph(items[i].name), rgb(0xFFFFFF), AlignCenter);
+            g.textIn({r.x, ic.b() + 6, r.w, 18}, 12, g.ellipsize(12, items[i].name, r.w - 8), th.text, AlignCenter);
+            if (interactive && ui.clicked(r)) navigate(items[i].url);
+        }
+        (void)rows;
+        g.popClip();
+    }
 
     void drawPlaceholder(Gfx& g, const Theme& th, const Rect& page) {
         g.rect(page, rgb(0xFFFFFF));
@@ -883,12 +1131,12 @@ private:
         g.rect(head, rgb(0xFAFAFA));
         g.rect({head.x, head.b() - 1, head.w, 1}, rgb(0xE6E6E6));
         drawIcon(g, IcGlyphGlobe, {head.x + pad, head.cy() - 8, 16, 16}, rgb(0x9A9A9A));
-        std::string host = st_.url.empty() ? "New tab" : displayUrl(st_.url);
+        std::string host = t_->st_.url.empty() ? "New tab" : displayUrl(t_->st_.url);
         g.textIn({head.x + pad + 26, head.y, head.w - pad * 2 - 26, head.h}, 13, g.ellipsize(13, host, head.w - pad * 2 - 26),
                  rgb(0x707070));
         float y = head.b() + pad;
         float cw = page.w - pad * 2;
-        std::string heading = st_.title.empty() ? host : st_.title;
+        std::string heading = t_->st_.title.empty() ? host : t_->st_.title;
         if (y + 30 < page.b()) {
             g.textIn({page.x + pad, y, cw, 30}, 20, g.ellipsize(20, heading, cw), rgb(0x2A2A2A));
             y += 44;
@@ -905,47 +1153,47 @@ private:
             y += f > 0 ? 24 : 18;
             i++;
         }
-        if (st_.loading && st_.progress < 100) {
-            float p = std::max(0.05f, st_.progress / 100.0f);
+        if (t_->st_.loading && t_->st_.progress < 100) {
+            float p = std::max(0.05f, t_->st_.progress / 100.0f);
             g.rect({page.x, page.y, page.w * p, 2}, th.accent);
         }
     }
 
     void setLayout(const Rect& page, const Rect& r, bool visible) {
-        if (!web_ || id_ < 0) return;
+        if (!web_ || t_->id_ < 0) return;
         float s = shell->gfx().scale();
         if (visible) {
             int x = (int)std::lround(r.x * s), y = (int)std::lround(r.y * s);
             int w = std::max(1, (int)std::lround(r.w * s)), h = std::max(1, (int)std::lround(r.h * s));
-            visPage_ = page;
-            visClip_ = r;
-            if (laidOut_ && lvis_ && x == lx_ && y == ly_ && w == lw_ && h == lh_) return;
-            laidOut_ = true;
-            lvis_ = true;
-            lx_ = x;
-            ly_ = y;
-            lw_ = w;
-            lh_ = h;
-            web_->layout(id_, x, y, w, h, true);
+            t_->visPage_ = page;
+            t_->visClip_ = r;
+            if (t_->laidOut_ && t_->lvis_ && x == t_->lx_ && y == t_->ly_ && w == t_->lw_ && h == t_->lh_) return;
+            t_->laidOut_ = true;
+            t_->lvis_ = true;
+            t_->lx_ = x;
+            t_->ly_ = y;
+            t_->lw_ = w;
+            t_->lh_ = h;
+            web_->layout(t_->id_, x, y, w, h, true);
             return;
         }
-        int w = hw_, h = hh_;
+        int w = t_->hw_, h = t_->hh_;
         if (page.w >= 8 && page.h >= 8) {
             w = (int)std::lround(page.w * s);
             h = (int)std::lround(page.h * s);
         }
         if (w <= 0 || h <= 0) {
-            if (!laidOut_) return;
-            w = std::max(1, lw_);
-            h = std::max(1, lh_);
+            if (!t_->laidOut_) return;
+            w = std::max(1, t_->lw_);
+            h = std::max(1, t_->lh_);
         }
-        if (laidOut_ && !lvis_ && w == hw_ && h == hh_) return;
-        if (lvis_) pendingClip_ = true;
-        laidOut_ = true;
-        lvis_ = false;
-        hw_ = w;
-        hh_ = h;
-        web_->layout(id_, lx_, ly_, w, h, false);
+        if (t_->laidOut_ && !t_->lvis_ && w == t_->hw_ && h == t_->hh_) return;
+        if (t_->lvis_) t_->pendingClip_ = true;
+        t_->laidOut_ = true;
+        t_->lvis_ = false;
+        t_->hw_ = w;
+        t_->hh_ = h;
+        web_->layout(t_->id_, t_->lx_, t_->ly_, w, h, false);
     }
 };
 

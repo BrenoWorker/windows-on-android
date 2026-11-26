@@ -129,21 +129,23 @@ bool Ui::radio(const Rect& r, const std::string& label, bool selected) {
     return clicked(r);
 }
 
-bool Ui::lineEdit(const Rect& r, LineEdit& e, bool& focused, const std::string& placeholder, float size, float indent) {
+bool Ui::lineEdit(const Rect& r, LineEdit& e, bool& focused, const std::string& placeholder, float size, float indent, float radius) {
     if (clicked(r)) {
         focused = true;
         requestKeyboard = true;
-        e.caret = g->hitIndex(size, e.text, x - (r.x + 10 + indent) + e.scroll);
+        e.caret = g->hitIndex(size, e.text, x - (r.x + (radius > 6 ? radius * 0.6f : 10) + indent) + e.scroll);
     }
     bool enter = false;
     if (focused && focus) enter = e.apply(chars, keys);
     if (e.caret > e.text.size()) e.caret = e.text.size();
 
-    g->rect(r, th->border, 4);
-    g->rect(r.inset(1), focused ? (th->dark ? rgb(0x1F1F1F) : rgb(0xFFFFFF)) : th->control, 3.5f);
-    if (focused) g->rect({r.x + 1, r.b() - 2, r.w - 2, 2}, th->accent, 1);
+    g->rect(r, focused && radius > 6 ? th->accent : th->border, radius);
+    g->rect(r.inset(focused && radius > 6 ? 2 : 1), focused ? (th->dark ? rgb(0x1F1F1F) : rgb(0xFFFFFF)) : th->control,
+            std::max(0.f, radius - (focused && radius > 6 ? 2 : 0.5f)));
+    if (focused && radius <= 6) g->rect({r.x + 1, r.b() - 2, r.w - 2, 2}, th->accent, 1);
 
-    Rect in{r.x + 10 + indent, r.y, r.w - 20 - indent, r.h};
+    float pad = radius > 6 ? radius * 0.6f : 10;
+    Rect in{r.x + pad + indent, r.y, r.w - pad * 2 - indent, r.h};
     float caretX = g->textWidth(size, e.text.substr(0, e.caret));
     if (caretX - e.scroll > in.w - 4) e.scroll = caretX - in.w + 4;
     if (caretX - e.scroll < 0) e.scroll = caretX;

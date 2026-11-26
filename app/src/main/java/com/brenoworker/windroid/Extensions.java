@@ -2819,11 +2819,14 @@ final class Extensions {
         return size + "\t" + size + "\t" + Base64.encodeToString(rgba, Base64.NO_WRAP);
     }
 
-    private String take(int tabId) {
+    private String take(String ids) {
         StringBuilder sb = new StringBuilder();
         String u;
         while ((u = opens.poll()) != null) sb.append("open\t").append(clean(u)).append('\n');
-        if (closeRequests.remove(tabId)) sb.append("close\n");
+        for (String part : ids.split(",")) {
+            int id = num(part);
+            if (id >= 0 && closeRequests.remove(id)) sb.append("close\t").append(id).append('\n');
+        }
         return sb.toString();
     }
 
@@ -2845,7 +2848,7 @@ final class Extensions {
             case "ext.icon":
                 return icon(arg);
             case "ext.take":
-                return take(num(arg));
+                return take(arg);
             case "ext.install":
                 ui.post(() -> install(arg));
                 return "";

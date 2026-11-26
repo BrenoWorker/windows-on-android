@@ -72,7 +72,8 @@ struct Ui {
     bool toggle(const Rect& r, bool& v);
     bool slider(const Rect& r, float& v);
     bool radio(const Rect& r, const std::string& label, bool selected);
-    bool lineEdit(const Rect& r, LineEdit& e, bool& focused, const std::string& placeholder, float size = 13, float indent = 0);
+    bool lineEdit(const Rect& r, LineEdit& e, bool& focused, const std::string& placeholder, float size = 13, float indent = 0,
+                  float radius = 4);
 };
 
 }
