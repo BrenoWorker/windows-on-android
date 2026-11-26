@@ -66,6 +66,7 @@ enum IconId {
     IcGlyphGlobe,
     IcGlyphGamepad,
     IcArchive,
+    IcGlyphPuzzle,
 };
 
 void drawIcon(Gfx& g, IconId id, const Rect& r, Color glyph, float battery = 1.0f);

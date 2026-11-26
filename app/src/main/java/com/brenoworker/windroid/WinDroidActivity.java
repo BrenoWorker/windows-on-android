@@ -27,6 +27,7 @@ import android.webkit.CookieManager;
 import android.webkit.JavascriptInterface;
 import android.webkit.WebChromeClient;
 import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
@@ -123,6 +124,7 @@ public class WinDroidActivity extends NativeActivity {
     private WinRuntime winRuntime;
     private SoundFx sounds;
     private Downloads downloads;
+    private Extensions extensions;
 
     private final class Browser {
         final int id;
@@ -199,6 +201,11 @@ public class WinDroidActivity extends NativeActivity {
                 n = android.webkit.URLUtil.guessFileName("download", null, mime);
             }
             downloads.saveDataUrl(n, dataUrl == null ? "" : dataUrl);
+        }
+
+        @JavascriptInterface
+        public void installExtension(String id) {
+            if (extensions != null) extensions.installFromPage(browser.id, id);
         }
 
         @JavascriptInterface
@@ -432,6 +439,13 @@ public class WinDroidActivity extends NativeActivity {
                 sounds.play(ok ? "notify" : "error");
             }
         });
+        final String agent = defaultAgent();
+        extensions = new Extensions(this, new Extensions.Host() {
+            @Override
+            public void download(String url, String name) {
+                if (downloads != null) downloads.start(url, agent, null, null, null, name);
+            }
+        });
         bluetooth = new BluetoothHub(this);
         bluetooth.setSounds(sounds);
         winRuntime = new WinRuntime(this);
@@ -442,6 +456,14 @@ public class WinDroidActivity extends NativeActivity {
                 if (spare == null && !isFinishing()) spare = buildWebView();
             }
         }, 1500);
+    }
+
+    private String defaultAgent() {
+        try {
+            return WebSettings.getDefaultUserAgent(this);
+        } catch (Throwable t) {
+            return "";
+        }
     }
 
     @SuppressWarnings("deprecation")
@@ -514,6 +536,7 @@ public class WinDroidActivity extends NativeActivity {
     }
 
     private String dispatch(String cmd, final String arg) {
+        if (cmd.startsWith("ext.")) return extensions == null ? "" : extensions.sys(cmd, arg);
         final BluetoothHub bt = bluetooth;
         final WinRuntime rt = winRuntime;
         if (bt == null || rt == null) return "";
@@ -690,6 +713,7 @@ public class WinDroidActivity extends NativeActivity {
         if (winRuntime != null) winRuntime.stopSession();
         if (sounds != null) sounds.release();
         for (Browser b : browsers.values()) release(b);
+        if (extensions != null) extensions.destroy();
         browsers.clear();
         if (spare != null) {
             spare.destroy();
@@ -778,6 +802,7 @@ public class WinDroidActivity extends NativeActivity {
         spare = null;
         b.defaultAgent = web.getSettings().getUserAgentString();
         web.addJavascriptInterface(new PageBridge(b), "WinDroid");
+        if (extensions != null) extensions.attach(b.id, web);
         web.setDownloadListener(new android.webkit.DownloadListener() {
             @Override
             public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimetype, long contentLength) {
@@ -796,11 +821,22 @@ public class WinDroidActivity extends NativeActivity {
         });
         web.setWebViewClient(new WebViewClient() {
             @Override
+            public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+                Extensions ex = extensions;
+                return ex == null ? null : ex.intercept(b.id, request);
+            }
+
+            @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 Uri uri = request.getUrl();
                 String scheme = uri.getScheme() == null ? "" : uri.getScheme();
+                if (scheme.equals("chrome-extension")) {
+                    view.loadUrl(Extensions.convertUrl(uri.toString()));
+                    return true;
+                }
                 if (scheme.equals("http") || scheme.equals("https") || scheme.equals("about")
                         || scheme.equals("data") || scheme.equals("javascript") || scheme.equals("blob")) {
+                    if (request.isForMainFrame() && extensions != null && !request.isRedirect()) extensions.expect(b.id, uri.toString());
                     return false;
                 }
                 try {
@@ -833,6 +869,12 @@ public class WinDroidActivity extends NativeActivity {
                 b.loading = true;
                 b.editable = false;
                 b.sync();
+                if (extensions != null) extensions.started(b.id, url);
+            }
+
+            @Override
+            public void onPageCommitVisible(WebView view, String url) {
+                if (extensions != null) extensions.committed(b.id);
             }
 
             @Override
@@ -841,12 +883,14 @@ public class WinDroidActivity extends NativeActivity {
                 b.progress = 100;
                 b.sync();
                 view.evaluateJavascript(HOOK, null);
+                if (extensions != null) extensions.finished(b.id, url);
                 if (b.parked && !b.wantVisible) scheduleCapture(b, 450);
             }
 
             @Override
             public void doUpdateVisitedHistory(WebView view, String url, boolean isReload) {
                 b.sync();
+                if (extensions != null) extensions.history(b.id, url);
             }
         });
         web.setWebChromeClient(new WebChromeClient() {
@@ -860,6 +904,7 @@ public class WinDroidActivity extends NativeActivity {
             @Override
             public void onReceivedTitle(WebView view, String title) {
                 b.title = title == null ? "" : title;
+                if (extensions != null) extensions.title(b.id, b.title);
             }
 
             @Override
@@ -920,6 +965,7 @@ public class WinDroidActivity extends NativeActivity {
     }
 
     private void release(Browser b) {
+        if (extensions != null) extensions.detach(b.id);
         if (b.custom != null) hideCustom(b);
         if (b.popup != null && b.popup.isShowing()) b.popup.dismiss();
         if (b.web != null) {
@@ -952,6 +998,7 @@ public class WinDroidActivity extends NativeActivity {
                 b.wantVisible = visible;
                 if (visible != b.shown) {
                     b.shown = visible;
+                    if (visible && extensions != null) extensions.activated(b.id);
                     if (!visible && b.pad != null) b.pad.releaseAll();
                     emit(b, visible ? "{type:'resume'}" : "{type:'pause'}");
                 }
@@ -1105,6 +1152,7 @@ public class WinDroidActivity extends NativeActivity {
         if (b == null) return;
         final String url = new String(urlBytes, StandardCharsets.UTF_8);
         b.url = url;
+        if (extensions != null) extensions.expect(id, url);
         runOnUiThread(new Runnable() {
             @Override
             public void run() {

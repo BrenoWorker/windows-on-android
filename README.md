@@ -21,7 +21,7 @@
 
 | App | What it does |
 | --- | --- |
-| Browser | Real web browsing with the Chromium engine (Android System WebView): tabs aware of back/forward, address bar with Google search, desktop site mode, typing through the WinDroid keyboard, and an "Open in Chrome" button that launches the page in Google Chrome as a Custom Tab. A WebView is prewarmed at startup and the page stays alive while covered |
+| Browser | Real web browsing with the Chromium engine (Android System WebView): tabs aware of back/forward, address bar with Google search, desktop site mode, typing through the WinDroid keyboard, Chrome extensions from the Chrome Web Store, and an "Open in Chrome" button that launches the page in Google Chrome as a Custom Tab. A WebView is prewarmed at startup and the page stays alive while covered |
 | File Explorer | Browses the app's own `C:` drive, creates, renames and deletes files and folders, Recycle Bin, disk usage |
 | Notepad | Word wrapped text editor with caret, zoom, Save and Save as |
 | Calculator | Standard calculator with the same behavior as the Windows one |
@@ -90,6 +90,35 @@ window.addEventListener("windroid", (e) => {
 
 Events are dispatched on `window` as `windroid` with `detail.type`: `pause` and `resume` when the window goes to the background or comes back, `fullscreen`, and `button` (with `id` and `down`; the D-pad reports `up`, `down`, `left` and `right`). Controls reset to the default layout when a new page loads.
 
+## Chrome extensions
+
+The Browser installs extensions straight from the Chrome Web Store and runs them on top of the WebView:
+
+- Open an extension in the [Chrome Web Store](https://chromewebstore.google.com/category/extensions) and tap the floating **Add to WinDroid** button (or open the extensions button in the toolbar and tap **Add to WinDroid**). WinDroid downloads the CRX, unpacks it and shows what the extension can do before you confirm. Updating works the same way.
+- The extensions button (puzzle piece, or type `chrome://extensions` in the address bar) lists installed extensions with their icon, badge, an on/off switch, options and remove. Tapping an extension opens its popup anchored to the toolbar, or sends `action.onClicked` when it has no popup.
+- Manifest V2 and V3 are supported. Background service workers, background scripts and background pages run in a hidden WebView that stays alive; popups, options pages and offscreen documents are real extension pages served from `https://<id>.ext.windroid/`.
+- Content scripts (`matches`, `exclude_matches`, globs, `run_at`, `all_frames`, `match_about_blank`, JS and CSS) are injected at document start in every frame through `addDocumentStartJavaScript` (with a fallback for older WebView versions).
+
+| API | Support |
+| --- | --- |
+| `runtime` | `sendMessage`, `onMessage` (sync, `return true` and promises), `connect` / `onConnect` ports, `getURL`, `getManifest`, `id`, `lastError`, `onInstalled`, `onStartup`, `openOptionsPage`, `getPlatformInfo`, `reload` |
+| `storage` | `local`, `sync` (kept on the device), `session`, `managed`, `onChanged` |
+| `tabs` | `query`, `get`, `getCurrent`, `create`, `update`, `reload`, `remove`, `goBack`, `goForward`, `sendMessage`, `connect`, `executeScript`, `insertCSS`, `onCreated`, `onUpdated`, `onActivated`, `onRemoved` |
+| `scripting` | `executeScript` (`func` + `args` or `files`, promise results), `insertCSS`, `removeCSS` |
+| `action` / `browserAction` / `pageAction` | badge text and color, title, icon, popup, enable, `onClicked` |
+| `alarms` | `create`, `get`, `getAll`, `clear`, `clearAll`, `onAlarm` |
+| `i18n` | `getMessage` with placeholders, `getUILanguage`, `_locales` for the device language |
+| `cookies` | `get`, `getAll`, `set`, `remove` on the Browser's cookie jar |
+| `webNavigation` | `onBeforeNavigate`, `onCommitted`, `onDOMContentLoaded`, `onCompleted`, `onHistoryStateUpdated` |
+| `downloads` | `download` (saved to `Downloads`) |
+| `notifications` | `create` shows a toast |
+| `offscreen` | `createDocument`, `closeDocument`, `hasDocument` |
+| `windows`, `permissions`, `management`, `commands`, `extension` | the subset extensions use to find their context |
+
+Extension pages (background, popup, options, offscreen) can `fetch` and `XMLHttpRequest` any site without CORS, like host permissions in Chrome; WinDroid makes those requests natively with the Browser's cookies.
+
+Limits: WebView has no isolated worlds, so content scripts share the page's JavaScript world (their `chrome` object is passed privately, not exposed on `window`). `declarativeNetRequest`, `webRequest` blocking, `contextMenus`, side panels, DevTools pages, native messaging and Google sign in (`identity`) are accepted but do nothing, so ad blockers that depend on them won't block requests. `scripting` and `tabs.executeScript` only reach the top frame.
+
 ## ZIP and RAR archives
 
 Open a `.zip` or `.rar` file (or select it in File Explorer and use **Extract all**, or long press it on the desktop) to get the Extract dialog: choose the destination folder, enter a password if the archive is encrypted, and follow the progress. The extracted folder opens when it finishes.
@@ -140,6 +169,11 @@ app/src/main/cpp
   platform/   android_main, EGL, input and JNI glue
 app/src/main/java
   WinDroidActivity  NativeActivity subclass: immersive mode, cutout insets, WebView host
+  Extensions        Chrome extension host: Web Store install, content scripts, messaging, background and popup pages
+app/src/main/assets/wdx
+  runtime.js        the chrome.* API shared by content scripts and extension pages
+  content.js        per-extension document start bootstrap that matches and runs content scripts
+  page.js           bootstrap for extension pages: transport, CORS-free fetch/XHR, popup sizing, service worker shim
 ```
 
 The browser page is a WebView hosted in a non-focusable popup window that is positioned over the window's client area while it is the active window. When another window, the Start menu or a flyout covers it, the page is captured into a texture and drawn by the GL shell instead, so windows still stack correctly.

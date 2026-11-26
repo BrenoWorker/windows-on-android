@@ -381,6 +381,16 @@ void drawIcon(Gfx& g, IconId id, const Rect& r, Color c, float battery) {
             L(9.5f, 2, 14, 2, t, c);
             L(14, 2, 14, 6.5f, t, c);
             break;
+        case IcGlyphPuzzle:
+            L(2, 5.5f, 5, 5.5f, t, c);
+            L(8, 5.5f, 11, 5.5f, t, c);
+            L(11, 5.5f, 11, 8, t, c);
+            L(11, 11, 11, 14, t, c);
+            L(11, 14, 2, 14, t, c);
+            L(2, 14, 2, 5.5f, t, c);
+            g.arc(X(6.5f), Y(5.5f), 1.6f * u, -kPi, 0, t * u, c);
+            g.arc(X(11), Y(9.5f), 1.6f * u, -kPi / 2, kPi / 2, t * u, c);
+            break;
         case IcGlyphMonitor:
             g.stroke(R(1.5f, 2.5f, 13, 8.5f), c, 1.0f * u, t * u);
             L(8, 11, 8, 13.5f, t, c);
