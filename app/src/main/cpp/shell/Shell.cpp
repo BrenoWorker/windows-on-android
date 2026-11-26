@@ -1425,6 +1425,7 @@ void Shell::drawTaskbar(bool cap) {
     };
     std::vector<Item> items;
     items.push_back({0, AppKind::Explorer, IcLogo});
+    bool searchPill = !cfg_.taskbarLeft ? tb.w >= 980 : tb.w >= 760;
     items.push_back({1, AppKind::Explorer, IcGlyphSearch});
     for (auto& a : appCatalog())
         if (a.pinned) items.push_back({2, a.kind, a.icon});
@@ -1432,11 +1433,30 @@ void Shell::drawTaskbar(bool cap) {
         if (!a.pinned && !windowsOf(a.kind).empty()) items.push_back({2, a.kind, a.icon});
     if (!windowsOf(AppKind::Program).empty()) items.push_back({2, AppKind::Program, IcDialog});
     float slot = 44;
-    float total = items.size() * slot - 4;
+    float pillW = searchPill ? 196.f : 40.f;
+    float total = items.size() * slot - 4 + (pillW - 40);
     float x0 = cfg_.taskbarLeft ? 10 + insL_ : (tb.w - total) * 0.5f;
     for (size_t i = 0; i < items.size(); i++) {
         Item& it = items[i];
-        Rect r{x0 + i * slot, tb.y + 4, 40, 40};
+        float off = i > 1 ? pillW - 40 : 0;
+        Rect r{x0 + i * slot + off, tb.y + 4, it.kind == 1 ? pillW : 40.f, 40};
+        if (it.kind == 1 && searchPill) {
+            Rect p{r.x, r.y + 4, r.w, 32};
+            gfx_.rect(p, theme_.dark ? rgb(0xFFFFFF, ui.held(r) ? 0.14f : 0.09f) : rgb(0xFFFFFF, ui.held(r) ? 0.7f : 0.95f), 16);
+            gfx_.stroke(p, theme_.dark ? rgb(0xFFFFFF, 0.08f) : rgb(0x000000, 0.08f), 16, 1);
+            drawIcon(gfx_, IcGlyphSearch, {p.x + 12, p.cy() - 8, 16, 16}, theme_.text);
+            gfx_.textIn({p.x + 38, p.y, p.w - 44, p.h}, 12.5f, "Search", theme_.textDim);
+            if (ui.clicked(r)) {
+                closeFlyouts();
+                startOpen_ = true;
+                search_.set("");
+                searchFocus_ = true;
+                allApps_ = false;
+                collectRecent();
+                if (!hardwareKb_) kbOpen_ = true;
+            }
+            continue;
+        }
         auto ws = it.kind == 2 ? windowsOf(it.app) : std::vector<AppWindow*>();
         bool isFocused = false;
         for (auto* w : ws)
@@ -1590,9 +1610,9 @@ void Shell::drawStart(bool cap) {
     gfx_.stroke(s, alpha(theme_.text, 0.1f), 8, 1);
 
     float pad = s.w > 500 ? 28 : 16;
-    Rect sb{s.x + pad, s.y + 20, s.w - pad * 2, 36};
-    bool enter = ui.lineEdit(sb, search_, searchFocus_, "Search for apps, settings, and documents", 13, 24);
-    drawIcon(gfx_, IcGlyphSearch, {sb.x + 12, sb.cy() - 7, 14, 14}, theme_.textDim);
+    Rect sb{s.x + pad, s.y + 20, s.w - pad * 2, 40};
+    bool enter = ui.lineEdit(sb, search_, searchFocus_, "Search for apps, settings, and documents", 13.5f, 26, 20);
+    drawIcon(gfx_, IcGlyphSearch, {sb.x + 16, sb.cy() - 7, 14, 14}, searchFocus_ ? theme_.accent : theme_.textDim);
 
     Rect bottom{s.x, s.b() - 62, s.w, 62};
     Rect body{s.x + pad, sb.b() + 16, s.w - pad * 2, bottom.y - sb.b() - 20};

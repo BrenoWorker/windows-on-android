@@ -30,6 +30,8 @@ public:
         if (arg == "about") page_ = 6;
     }
 
+    bool wantsText() const override { return findFocus_; }
+
     void draw(Ui& ui, const Rect& c) override {
         Gfx& g = *ui.g;
         const Theme& th = *ui.th;
@@ -75,6 +77,20 @@ private:
     double sizeT_ = -1;
     long long cachedSize_ = 0;
 
+    LineEdit find_;
+    bool findFocus_ = false;
+
+    static bool matches(const std::string& label, const std::string& q) {
+        std::string a, b;
+        for (char ch : label) a += (char)tolower((unsigned char)ch);
+        for (char ch : q) b += (char)tolower((unsigned char)ch);
+        size_t s = b.find_first_not_of(' ');
+        if (s == std::string::npos) return true;
+        b = b.substr(s);
+        while (!b.empty() && b.back() == ' ') b.pop_back();
+        return a.find(b) != std::string::npos;
+    }
+
     void drawNav(Ui& ui, const Rect& r, bool compact) {
         Gfx& g = *ui.g;
         const Theme& th = *ui.th;
@@ -90,8 +106,25 @@ private:
         }
         IconId icons[] = {IcPC, IcGlyphBluetooth, IcGlyphBrush, IcGlyphGrid, IcUser, IcClock, IcGlyphGear};
         const char* labels[] = {"System", "Bluetooth & devices", "Personalization", "Apps", "Accounts", "Time & language", "About"};
+        std::string q;
+        if (!compact) {
+            Rect sb{r.x + 10, y, r.w - 20, 36};
+            if (ui.lineEdit(sb, find_, findFocus_, "Find a setting", 12.5f, 22, 18)) {
+                for (int i = 0; i < 7; i++)
+                    if (matches(labels[i], find_.text)) {
+                        page_ = i;
+                        break;
+                    }
+                findFocus_ = false;
+            }
+            if (findFocus_ && ui.pressed && !sb.contains(ui.x, ui.y)) findFocus_ = false;
+            drawIcon(g, IcGlyphSearch, {sb.r() - 28, sb.cy() - 7, 14, 14}, th.textDim);
+            q = find_.text;
+            y += 48;
+        }
         for (int i = 0; i < 7; i++) {
-            Rect ir{r.x + 6, y, r.w - 12, 38};
+            if (!q.empty() && !matches(labels[i], q)) continue;
+            Rect ir{r.x + 6, y, r.w - 12, 42};
             bool sel = page_ == i;
             if (sel) g.rect(ir, th.press, 5);
             if (ui.held(ir)) g.rect(ir, th.press, 5);
@@ -103,7 +136,7 @@ private:
                 g.textIn({ir.x + 44, ir.y, ir.w - 44, ir.h}, 12.5f, labels[i], th.text);
             }
             if (ui.clicked(ir)) page_ = i;
-            y += 40;
+            y += 44;
         }
     }
 
