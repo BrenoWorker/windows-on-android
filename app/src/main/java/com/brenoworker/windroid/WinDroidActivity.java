@@ -140,6 +140,8 @@ public class WinDroidActivity extends NativeActivity {
         volatile boolean loading;
         volatile boolean editable;
         volatile boolean desktop;
+        boolean desktopAgent;
+        boolean storeRetried;
         volatile int[] snapshot;
         boolean parked;
         boolean capturing;
@@ -802,6 +804,7 @@ public class WinDroidActivity extends NativeActivity {
         spare = null;
         b.defaultAgent = web.getSettings().getUserAgentString();
         web.addJavascriptInterface(new PageBridge(b), "WinDroid");
+        storeShim(web);
         if (extensions != null) extensions.attach(b.id, web);
         web.setDownloadListener(new android.webkit.DownloadListener() {
             @Override
@@ -837,6 +840,10 @@ public class WinDroidActivity extends NativeActivity {
                 if (scheme.equals("http") || scheme.equals("https") || scheme.equals("about")
                         || scheme.equals("data") || scheme.equals("javascript") || scheme.equals("blob")) {
                     if (request.isForMainFrame() && extensions != null && !request.isRedirect()) extensions.expect(b.id, uri.toString());
+                    if (request.isForMainFrame() && applyAgent(b, uri.toString())) {
+                        view.loadUrl(uri.toString());
+                        return true;
+                    }
                     return false;
                 }
                 try {
@@ -861,6 +868,14 @@ public class WinDroidActivity extends NativeActivity {
             @Override
             public void onPageStarted(WebView view, String url, Bitmap favicon) {
                 b.url = url == null ? "" : url;
+                if (url != null && url.startsWith("https://chromewebstore.google.com/unsupported") && !b.storeRetried) {
+                    b.storeRetried = true;
+                    applyAgent(b, url);
+                    view.stopLoading();
+                    view.loadUrl("https://chromewebstore.google.com/category/extensions");
+                    return;
+                }
+                if (url != null && !isStore(url)) b.storeRetried = false;
                 if (b.apiFullscreen) {
                     b.apiFullscreen = false;
                     refreshGame(b);
@@ -1156,7 +1171,9 @@ public class WinDroidActivity extends NativeActivity {
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
-                if (b.web != null) b.web.loadUrl(url);
+                if (b.web == null) return;
+                applyAgent(b, url);
+                b.web.loadUrl(url);
             }
         });
     }
@@ -1209,17 +1226,78 @@ public class WinDroidActivity extends NativeActivity {
 
     private void toggleDesktop(Browser b) {
         b.desktop = !b.desktop;
+        applyAgent(b, b.url);
+        b.web.reload();
+    }
+
+    private static final String STORE_SHIM = "(function(){try{var n=navigator;"
+            + "var d={brands:[{brand:'Chromium',version:'131'},{brand:'Google Chrome',version:'131'}],mobile:false,platform:'Linux',"
+            + "getHighEntropyValues:function(){return Promise.resolve({brands:this.brands,mobile:false,platform:'Linux',platformVersion:'6.8.0',"
+            + "architecture:'x86',bitness:'64',model:'',uaFullVersion:'131.0.0.0',fullVersionList:this.brands});},toJSON:function(){return this;}};"
+            + "Object.defineProperty(Navigator.prototype,'userAgentData',{get:function(){return d;},configurable:true});"
+            + "Object.defineProperty(Navigator.prototype,'platform',{get:function(){return 'Linux x86_64';},configurable:true});"
+            + "Object.defineProperty(Navigator.prototype,'maxTouchPoints',{get:function(){return 0;},configurable:true});"
+            + "}catch(e){}})();";
+
+    private void storeShim(WebView web) {
+        try {
+            if (!androidx.webkit.WebViewFeature.isFeatureSupported(androidx.webkit.WebViewFeature.DOCUMENT_START_SCRIPT)) return;
+            java.util.Set<String> rules = new java.util.HashSet<>();
+            rules.add("https://chromewebstore.google.com");
+            rules.add("https://chrome.google.com");
+            androidx.webkit.WebViewCompat.addDocumentStartJavaScript(web, STORE_SHIM, rules);
+        } catch (Throwable ignored) {
+            return;
+        }
+    }
+
+    private static boolean isStore(String url) {
+        if (url == null) return false;
+        return url.startsWith("https://chromewebstore.google.com") || url.startsWith("https://chrome.google.com/webstore");
+    }
+
+    private boolean applyAgent(Browser b, String url) {
+        if (b.web == null) return false;
+        boolean want = b.desktop || isStore(url);
+        if (want == b.desktopAgent) return false;
+        b.desktopAgent = want;
         WebSettings s = b.web.getSettings();
-        if (b.desktop) {
+        if (want) {
             String agent = b.defaultAgent == null ? "" : b.defaultAgent;
             agent = agent.replaceAll("\\(Linux; Android[^)]*\\)", "(X11; Linux x86_64)")
                     .replace(" Mobile", "")
-                    .replace("; wv", "");
+                    .replace("; wv", "")
+                    .replaceAll("Version/[0-9.]+ ", "");
             s.setUserAgentString(agent);
         } else {
             s.setUserAgentString(null);
         }
-        b.web.reload();
+        setAgentMetadata(s, want);
+        return true;
+    }
+
+    private static void setAgentMetadata(WebSettings s, boolean desktop) {
+        try {
+            if (!androidx.webkit.WebViewFeature.isFeatureSupported("USER_AGENT_METADATA")) return;
+            Class<?> compat = Class.forName("androidx.webkit.WebSettingsCompat");
+            Class<?> meta = Class.forName("androidx.webkit.UserAgentMetadata");
+            Object value;
+            if (desktop) {
+                Class<?> builder = Class.forName("androidx.webkit.UserAgentMetadata$Builder");
+                Object bld = builder.getConstructor().newInstance();
+                builder.getMethod("setMobile", boolean.class).invoke(bld, false);
+                builder.getMethod("setPlatform", String.class).invoke(bld, "Linux");
+                builder.getMethod("setPlatformVersion", String.class).invoke(bld, "6.8.0");
+                builder.getMethod("setModel", String.class).invoke(bld, "");
+                value = builder.getMethod("build").invoke(bld);
+            } else {
+                Class<?> builder = Class.forName("androidx.webkit.UserAgentMetadata$Builder");
+                value = builder.getMethod("build").invoke(builder.getConstructor().newInstance());
+            }
+            compat.getMethod("setUserAgentMetadata", WebSettings.class, meta).invoke(null, s, value);
+        } catch (Throwable ignored) {
+            return;
+        }
     }
 
     private void openInChrome(String url) {
