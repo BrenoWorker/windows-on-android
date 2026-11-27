@@ -11,8 +11,15 @@ namespace wd {
 class ProgramWindow : public AppWindow {
 public:
     ProgramWindow(Shell& s, const std::string& exe, bool run, const std::string& args) : exe_(exe), args_(args) {
-        readPe(exe, pe_, true);
-        name_ = programName(pe_, exe);
+        std::string ext = fs::extension(exe);
+        msi_ = ext == "msi";
+        batch_ = ext == "bat" || ext == "cmd";
+        if (msi_ || batch_)
+            name_ = fs::stem(fs::baseName(exe));
+        else {
+            readPe(exe, pe_, true);
+            name_ = programName(pe_, exe);
+        }
         title = name_;
         prefW = run ? 720 : 520;
         prefH = run ? 440 : 400;
@@ -34,6 +41,11 @@ public:
         Gfx& g = *ui.g;
         const Theme& th = *ui.th;
         if (!tex_ && pe_.iconW > 0 && !pe_.icon.empty()) tex_ = g.createTexture(pe_.iconW, pe_.iconH, pe_.icon.data());
+        if (!checkedRuntime_) {
+            checkedRuntime_ = true;
+            std::string st = shell->sys("rt.status");
+            needsWow64_ = st.size() > 3 && st[2] == '1' && st.compare(st.size() - 2, 2, "\t0") == 0;
+        }
         if (runNow_) {
             runNow_ = false;
             start();
@@ -53,10 +65,15 @@ private:
     std::string args_;
     std::string name_;
     PeInfo pe_;
+    bool msi_ = false;
+    bool batch_ = false;
     GLuint tex_ = 0;
     Mode mode_ = Mode::Info;
     bool runNow_ = false;
     bool desktop_ = true;
+    bool needsWow64_ = false;
+    bool checkedRuntime_ = false;
+    bool setupNoted_ = false;
     int job_ = 0;
     bool running_ = false;
     int exit_ = 0;
@@ -81,7 +98,7 @@ private:
             mode_ = Mode::NoRuntime;
             return;
         }
-        if (!pe_.console) {
+        if (!batch_ && (msi_ || !pe_.console)) {
             shell->runWindowsApp(exe_, args_);
             shell->close(this);
             return;
@@ -120,12 +137,17 @@ private:
         bool alive = r[0] == '1';
         int code = atoi(r.substr(t1 + 1, t2 - t1 - 1).c_str());
         std::string text = r.substr(t2 + 1);
+        if (!setupNoted_ && text.empty() && alive && shell->sys("rt.status").find("\tsetup\t") != std::string::npos) {
+            setupNoted_ = true;
+            addText("Setting up Windows for the first time. This can take a few minutes...\n\n");
+        }
         if (!text.empty()) addText(text);
         if (!alive && text.empty()) {
             running_ = false;
             exit_ = code;
             if (!partial_.empty()) addText("\n");
             addText("\n[Process exited with code " + std::to_string(code) + "]\n");
+            syncWindowsApps(*shell);
         }
     }
 
@@ -142,6 +164,7 @@ private:
         float x = c.x + 22, w = c.w - 44;
         drawAppIcon(g, th, {x, c.y + 20, 48, 48});
         g.textBold(x + 62, c.y + 22, 16, g.ellipsize(16, name_, w - 62), th.text);
+        bool script = msi_ || batch_;
         std::string sub = pe_.company.empty() ? "Unknown publisher" : pe_.company;
         g.text(x + 62, c.y + 48, 12, g.ellipsize(12, sub, w - 62), th.textDim);
         float y = c.y + 88;
@@ -149,14 +172,17 @@ private:
         row(g, th, x, y, w, "Version", pe_.version);
         std::string type = !pe_.valid ? "Not a valid Windows program" : (pe_.dll ? "Library (DLL)" : (pe_.console ? "Console application" : "Windows application"));
         if (pe_.valid) type += ", " + peMachineName(pe_.machine);
+        if (msi_) type = "Windows Installer package";
+        if (batch_) type = "Windows batch script";
         row(g, th, x, y, w, "Type", type);
         if (!pe_.installer.empty()) row(g, th, x, y, w, "Installer", pe_.installer + " setup");
         if (pe_.dotnet) row(g, th, x, y, w, "Framework", ".NET");
 
         std::string warn;
-        if (!pe_.valid) warn = "This file isn't a Windows program WinDroid can open.";
-        else if (!peMachineSupported(pe_.machine)) warn = "This program is built for " + peMachineName(pe_.machine) + " Windows and can't run with the x64 runtime.";
-        else if (pe_.machine == 0x14C) warn = "32-bit programs need a runtime with WoW64 support and may not start.";
+        bool oldRuntime = pe_.machine == 0x14C && needsWow64_;
+        if (!script && !pe_.valid) warn = "This file isn't a Windows program WinDroid can open.";
+        else if (!script && !peMachineSupported(pe_.machine)) warn = "This program is built for " + peMachineName(pe_.machine) + " Windows and can't run with the x64 runtime.";
+        else if (oldRuntime) warn = "The installed runtime can't run 32-bit programs. Update it in Settings > Apps.";
         if (!warn.empty()) {
             y += 6;
             auto lines = wrapText(g, 12, warn, w - 20);
@@ -170,11 +196,12 @@ private:
             y = box.b() + 8;
         }
 
-        bool installer = !pe_.installer.empty();
-        bool canRun = pe_.valid && peMachineSupported(pe_.machine) && !pe_.dll;
+        bool installer = msi_ || !pe_.installer.empty();
+        bool canRun = script || (pe_.valid && peMachineSupported(pe_.machine) && !pe_.dll && !oldRuntime);
         bool installed = isInstalledPath(*shell, exe_);
+        bool canCopy = !installer && !batch_ && !installed;
         Rect bar{c.x, c.b() - 64, c.w, 64};
-        if (canRun && !installer && !installed && y + 30 < bar.y) {
+        if (canRun && canCopy && y + 30 < bar.y) {
             Rect tr{x - 4, bar.y - 40, w, 32};
             ui.toggle({tr.x, tr.y + 6, 48, 20}, desktop_);
             g.textIn({tr.x + 56, tr.y, tr.w - 56, tr.h}, 12.5f, "Create a desktop shortcut", th.text);
@@ -196,7 +223,7 @@ private:
                 frame.x = std::max(wa.x + 4, std::min(frame.x, wa.r() - frame.w - 4));
             }
         }
-        if (!installer && !installed && ui.button(instB, "Install", true, canRun)) {
+        if (canCopy && ui.button(instB, "Install", true, canRun)) {
             std::string target, err;
             if (installProgram(*shell, exe_, pe_, desktop_, target, err)) {
                 exe_ = target;

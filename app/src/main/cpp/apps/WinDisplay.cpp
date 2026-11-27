@@ -22,7 +22,10 @@ public:
     ~WinDisplayWindow() override {
         if (tex_ && shell) shell->gfx().deleteTexture(tex_);
         x_.close();
-        if (shell) shell->sys("wine.stop");
+        if (shell) {
+            shell->sys("wine.stop");
+            syncWindowsApps(*shell);
+        }
     }
 
     bool wantsText() const override { return x_.connected(); }
@@ -73,7 +76,10 @@ public:
             x_.key(0xFF0D, false);
         }
         std::string status = state_ == "ready" ? (running_ > 0 ? std::to_string(running_) + (running_ == 1 ? " app running" : " apps running") : "Ready")
-                                               : (state_ == "failed" ? "Couldn't start" : "Starting Windows...");
+                             : state_ == "failed" ? "Couldn't start"
+                             : state_ == "setup"  ? "Setting up Windows..."
+                             : state_ == "off"    ? "Stopped"
+                                                  : "Starting Windows...";
         float sw = g.textWidth(12, status);
         if (bar.r() - 90 - sw > bx + 70) g.textIn({bar.r() - 96 - sw, bar.y, sw, bar.h}, 12, status, th.textDim);
         if (ui.button({bar.r() - 82, bar.y + 6, 74, 28}, "Shut down")) {
@@ -114,7 +120,7 @@ private:
     bool started_ = false;
     std::string state_ = "starting";
     std::string socket_, fb_;
-    double pollT_ = -1, frameT_ = -1, jobsT_ = -1;
+    double pollT_ = -1, connectT_ = -1, frameT_ = -1, jobsT_ = -1, syncT_ = -1;
     std::vector<Launch> pending_;
     std::vector<int> jobs_;
     int running_ = 0;
@@ -138,7 +144,7 @@ private:
 
     void poll() {
         double now = shell->now();
-        if (state_ != "ready" && now - pollT_ > 0.25) {
+        if (now - pollT_ > (state_ == "ready" ? 1.0 : 0.25)) {
             pollT_ = now;
             auto f = split(shell->sys("wine.display"));
             if (f.size() >= 5) {
@@ -147,8 +153,9 @@ private:
                 fb_ = f[2];
             }
         }
-        if (state_ == "ready" && !x_.connected() && now - pollT_ > 0.5) {
-            pollT_ = now;
+        if (state_ != "ready" && x_.connected()) x_.close();
+        if (state_ == "ready" && !x_.connected() && now - connectT_ > 0.5) {
+            connectT_ = now;
             x_.connect(socket_);
         }
         bool front = shell->focused() == this;
@@ -187,13 +194,17 @@ private:
                 size_t t1 = r.find('\t');
                 size_t t2 = t1 == std::string::npos ? std::string::npos : r.find('\t', t1 + 1);
                 bool hasText = t2 != std::string::npos && t2 + 1 < r.size();
-                if ((!r.empty() && r[0] == '1') || hasText) {
-                    alive++;
-                    keep.push_back(j);
-                }
+                if ((!r.empty() && r[0] == '1') || hasText) keep.push_back(j);
             }
+            bool finished = keep.size() < jobs_.size();
             jobs_ = keep;
+            alive = atoi(shell->sys("wine.running").c_str());
+            if (finished || alive != running_) syncT_ = -1;
             running_ = alive;
+        }
+        if (state_ == "ready" && now - syncT_ > 5.0) {
+            syncT_ = now;
+            syncWindowsApps(*shell);
         }
     }
 
@@ -205,7 +216,10 @@ private:
         }
         float a = (float)shell->now() * 5.f;
         g.arc(area.cx(), area.cy() - 20, 16, a, a + 4.2f, 3, th.accent);
-        g.textIn({area.x, area.cy() + 12, area.w, 22}, 13, "Starting Windows...", rgb(0xFFFFFF), AlignCenter);
+        bool setup = state_ == "setup";
+        g.textIn({area.x, area.cy() + 12, area.w, 22}, 13, setup ? "Setting up Windows for the first time..." : "Starting Windows...",
+                 rgb(0xFFFFFF), AlignCenter);
+        if (setup) g.textIn({area.x, area.cy() + 36, area.w, 20}, 11.5f, "This can take a few minutes", rgb(0xAAAAAA), AlignCenter);
     }
 
     void map(const Rect& img, float k, float ux, float uy, int& x, int& y) {

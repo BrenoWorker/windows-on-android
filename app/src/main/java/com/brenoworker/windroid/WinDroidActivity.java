@@ -17,6 +17,7 @@ import android.view.Display;
 import android.view.DisplayCutout;
 import android.view.PixelCopy;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.Window;
@@ -672,6 +673,10 @@ public class WinDroidActivity extends NativeActivity {
             case "wine.stop":
                 rt.stopSession();
                 return "";
+            case "wine.running":
+                return String.valueOf(rt.running());
+            case "wine.apps":
+                return rt.apps();
             case "exe.poll":
                 return rt.poll(parseInt(arg));
             case "exe.write": {
@@ -712,7 +717,7 @@ public class WinDroidActivity extends NativeActivity {
     @Override
     protected void onDestroy() {
         if (bluetooth != null) bluetooth.stop();
-        if (winRuntime != null) winRuntime.stopSession();
+        if (winRuntime != null) winRuntime.shutdownSession();
         if (sounds != null) sounds.release();
         for (Browser b : browsers.values()) release(b);
         if (extensions != null) extensions.destroy();
@@ -806,6 +811,16 @@ public class WinDroidActivity extends NativeActivity {
         web.addJavascriptInterface(new PageBridge(b), "WinDroid");
         storeShim(web);
         if (extensions != null) extensions.attach(b.id, web);
+        final int[] touch = new int[2];
+        final WebView page = web;
+        web.setOnTouchListener((v, event) -> {
+            if (event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+                touch[0] = (int) event.getRawX();
+                touch[1] = (int) event.getRawY();
+            }
+            return false;
+        });
+        web.setOnLongClickListener(v -> extensions != null && extensions.longPress(b.id, page, touch[0], touch[1]));
         web.setDownloadListener(new android.webkit.DownloadListener() {
             @Override
             public void onDownloadStart(String url, String userAgent, String contentDisposition, String mimetype, long contentLength) {

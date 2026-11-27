@@ -467,7 +467,7 @@ function (cfg, T) {
       });
     }
     var tg = d.target || {};
-    var o = { tab: tg.tabId, all: !!tg.allFrames, args: d.args || [] };
+    var o = { tab: tg.tabId, all: !!tg.allFrames, args: d.args || [], world: d.world || '' };
     if (typeof d.func === 'function' || typeof d.function === 'function') {
       o.kind = 'func';
       o.func = String(d.func || d.function);
@@ -585,14 +585,20 @@ function (cfg, T) {
   };
   ['onCreated', 'onRemoved', 'onFocusChanged', 'onBoundsChanged'].forEach(function (n) { windows[n] = ev('windows.' + n); });
 
+  function scriptsCall(x, d, cb, map) {
+    return call({ o: 'cs', x: x, d: d }, cb, map);
+  }
+
+  function nothing() { return undefined; }
+
   var scripting = {
     executeScript: M(function (a, cb) { return execJs(a, cb, false); }),
     insertCSS: M(function (a, cb) { return execCss(a, cb, false, false); }),
     removeCSS: M(function (a, cb) { return execCss(a, cb, false, true); }),
-    registerContentScripts: M(function (a, cb) { return done(undefined, cb); }),
-    unregisterContentScripts: M(function (a, cb) { return done(undefined, cb); }),
-    updateContentScripts: M(function (a, cb) { return done(undefined, cb); }),
-    getRegisteredContentScripts: M(function (a, cb) { return done([], cb); }),
+    registerContentScripts: M(function (a, cb) { return scriptsCall('register', { scripts: a[0] || [] }, cb, nothing); }),
+    unregisterContentScripts: M(function (a, cb) { return scriptsCall('unregister', { filter: a[0] || null }, cb, nothing); }),
+    updateContentScripts: M(function (a, cb) { return scriptsCall('update', { scripts: a[0] || [] }, cb, nothing); }),
+    getRegisteredContentScripts: M(function (a, cb) { return scriptsCall('get', { filter: a[0] || null }, cb); }),
     ExecutionWorld: { ISOLATED: 'ISOLATED', MAIN: 'MAIN' },
     StyleOrigin: { AUTHOR: 'AUTHOR', USER: 'USER' }
   };
@@ -660,15 +666,41 @@ function (cfg, T) {
   };
 
   var menuSeq = 0;
+  var menuClicks = {};
+
+  function menuCall(x, d, cb) {
+    return call({ o: 'menu', x: x, d: d }, cb, nothing);
+  }
+
+  function menuProps(props) {
+    var o = {};
+    Object.keys(props || {}).forEach(function (k) {
+      if (typeof props[k] !== 'function' && props[k] !== undefined) o[k] = props[k];
+    });
+    return o;
+  }
+
   var contextMenus = {
     create: function (props, cb) {
       var id = props && props.id != null ? props.id : ++menuSeq;
-      if (typeof cb === 'function') setTimeout(cb, 0);
+      var d = menuProps(props);
+      d.id = id;
+      if (props && typeof props.onclick === 'function') menuClicks[id] = props.onclick;
+      menuCall('create', d, typeof cb === 'function' ? cb : function () {});
       return id;
     },
-    update: M(function (a, cb) { return done(undefined, cb); }),
-    remove: M(function (a, cb) { return done(undefined, cb); }),
-    removeAll: M(function (a, cb) { return done(undefined, cb); }),
+    update: M(function (a, cb) {
+      if (a[1] && typeof a[1].onclick === 'function') menuClicks[a[0]] = a[1].onclick;
+      return menuCall('update', { id: a[0], props: menuProps(a[1]) }, cb);
+    }),
+    remove: M(function (a, cb) {
+      delete menuClicks[a[0]];
+      return menuCall('remove', { id: a[0] }, cb);
+    }),
+    removeAll: M(function (a, cb) {
+      menuClicks = {};
+      return menuCall('removeAll', {}, cb);
+    }),
     refresh: function () {},
     ACTION_MENU_TOP_LEVEL_LIMIT: 6,
     ContextType: enumOf(['all', 'page', 'frame', 'selection', 'link', 'editable', 'image', 'video', 'audio', 'launcher', 'browser_action', 'page_action', 'action']),
@@ -677,6 +709,10 @@ function (cfg, T) {
     onShown: ev('contextMenus.onShown'),
     onHidden: ev('contextMenus.onHidden')
   };
+  contextMenus.onClicked.addListener(function (info, tab) {
+    var f = menuClicks[info.menuItemId];
+    if (f) f(info, tab);
+  });
 
   var notifySeq = 0;
   var notifications = {
@@ -731,20 +767,26 @@ function (cfg, T) {
   webRequest.OnCompletedOptions = enumOf(['responseHeaders', 'extraHeaders']);
 
   var declarativeNetRequest = stub({
-    updateDynamicRules: undefined,
-    updateSessionRules: undefined,
-    getDynamicRules: function () { return []; },
-    getSessionRules: function () { return []; },
-    updateEnabledRulesets: undefined,
-    getEnabledRulesets: function () { return []; },
     updateStaticRules: undefined,
     getDisabledRuleIds: function () { return []; },
-    isRegexSupported: function () { return { isSupported: true }; },
+    isRegexSupported: function (d) {
+      try {
+        new RegExp(d.regex);
+        return { isSupported: true };
+      } catch (e) {
+        return { isSupported: false, reason: 'syntaxError' };
+      }
+    },
     getAvailableStaticRuleCount: 30000,
-    setExtensionActionOptions: undefined,
     testMatchOutcome: function () { return { matchedRules: [] }; },
     getMatchedRules: function () { return { rulesMatchedInfo: [] }; }
   }, ['onRuleMatchedDebug']);
+  ['updateDynamicRules', 'updateSessionRules', 'updateEnabledRulesets', 'setExtensionActionOptions'].forEach(function (n) {
+    declarativeNetRequest[n] = M(function (a, cb) { return call({ o: 'dnr', x: n, d: a[0] || {} }, cb, nothing); });
+  });
+  ['getDynamicRules', 'getSessionRules', 'getEnabledRulesets'].forEach(function (n) {
+    declarativeNetRequest[n] = M(function (a, cb) { return call({ o: 'dnr', x: n, d: a[0] || {} }, cb); });
+  });
   declarativeNetRequest.MAX_NUMBER_OF_DYNAMIC_RULES = 30000;
   declarativeNetRequest.MAX_NUMBER_OF_SESSION_RULES = 5000;
   declarativeNetRequest.MAX_NUMBER_OF_UNSAFE_DYNAMIC_RULES = 5000;

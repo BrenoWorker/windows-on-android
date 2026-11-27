@@ -25,5 +25,8 @@ std::string programName(const PeInfo& pe, const std::string& path);
 bool isInstalledPath(const Shell& s, const std::string& path);
 bool installProgram(Shell& s, const std::string& exe, const PeInfo& pe, bool desktop, std::string& installed, std::string& err);
 void uninstallProgram(Shell& s, const Shortcut& sc);
+bool isWindowsProgram(const std::string& path);
+bool isWineTarget(const std::string& path);
+void syncWindowsApps(Shell& s);
 
 }

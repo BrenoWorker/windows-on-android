@@ -97,14 +97,18 @@ The Browser installs extensions straight from the Chrome Web Store and runs them
 - Open an extension in the [Chrome Web Store](https://chromewebstore.google.com/category/extensions) and tap the floating **Add to WinDroid** button (or open the extensions button in the toolbar and tap **Add to WinDroid**). WinDroid downloads the CRX, unpacks it and shows what the extension can do before you confirm. Updating works the same way.
 - The extensions button (puzzle piece, or type `chrome://extensions` in the address bar) lists installed extensions with their icon, badge, an on/off switch, options and remove. Tapping an extension opens its popup anchored to the toolbar, or sends `action.onClicked` when it has no popup.
 - Manifest V2 and V3 are supported. Background service workers, background scripts and background pages run in a hidden WebView that stays alive; popups, options pages and offscreen documents are real extension pages served from `https://<id>.ext.windroid/`.
-- Content scripts (`matches`, `exclude_matches`, globs, `run_at`, `all_frames`, `match_about_blank`, JS and CSS) are injected at document start in every frame through `addDocumentStartJavaScript` (with a fallback for older WebView versions).
+- Content scripts (`matches`, `exclude_matches`, globs, `run_at`, `all_frames`, `match_about_blank`, JS and CSS) are injected at document start in every frame through `addDocumentStartJavaScript` (with a fallback for older WebView versions). `"world": "MAIN"` runs a script as part of the page.
+- **Content blockers** work through `declarativeNetRequest`: static rulesets, dynamic and session rules are applied to the Browser's requests, including service worker requests where WebView supports it.
+- **Context menu items** added by extensions appear when you long press a link, an image or an empty part of a page, including after selecting text.
 
 | API | Support |
 | --- | --- |
 | `runtime` | `sendMessage`, `onMessage` (sync, `return true` and promises), `connect` / `onConnect` ports, `getURL`, `getManifest`, `id`, `lastError`, `onInstalled`, `onStartup`, `openOptionsPage`, `getPlatformInfo`, `reload` |
 | `storage` | `local`, `sync` (kept on the device), `session`, `managed`, `onChanged` |
 | `tabs` | `query`, `get`, `getCurrent`, `create`, `update`, `reload`, `remove`, `goBack`, `goForward`, `sendMessage`, `connect`, `executeScript`, `insertCSS`, `onCreated`, `onUpdated`, `onActivated`, `onRemoved` |
-| `scripting` | `executeScript` (`func` + `args` or `files`, promise results), `insertCSS`, `removeCSS` |
+| `scripting` | `executeScript` (`func` + `args` or `files`, promise results, `MAIN` world), `insertCSS`, `removeCSS`, `registerContentScripts`, `updateContentScripts`, `unregisterContentScripts`, `getRegisteredContentScripts` |
+| `declarativeNetRequest` | `block`, `allow`, `allowAllRequests`, `redirect`, `upgradeScheme`; `getDynamicRules`, `updateDynamicRules`, `getSessionRules`, `updateSessionRules`, `getEnabledRulesets`, `updateEnabledRulesets`, `setExtensionActionOptions` (blocked count badge) |
+| `contextMenus` | `create`, `update`, `remove`, `removeAll`, `onClicked`, submenus, checkbox and radio items, link and URL pattern filters |
 | `action` / `browserAction` / `pageAction` | badge text and color, title, icon, popup, enable, `onClicked` |
 | `alarms` | `create`, `get`, `getAll`, `clear`, `clearAll`, `onAlarm` |
 | `i18n` | `getMessage` with placeholders, `getUILanguage`, `_locales` for the device language |
@@ -117,7 +121,7 @@ The Browser installs extensions straight from the Chrome Web Store and runs them
 
 Extension pages (background, popup, options, offscreen) can `fetch` and `XMLHttpRequest` any site without CORS, like host permissions in Chrome; WinDroid makes those requests natively with the Browser's cookies.
 
-Limits: WebView has no isolated worlds, so content scripts share the page's JavaScript world (their `chrome` object is passed privately, not exposed on `window`). `declarativeNetRequest`, `webRequest` blocking, `contextMenus`, side panels, DevTools pages, native messaging and Google sign in (`identity`) are accepted but do nothing, so ad blockers that depend on them won't block requests. `scripting` and `tabs.executeScript` only reach the top frame.
+Limits: WebView has no isolated worlds, so content scripts share the page's JavaScript world (their `chrome` object is passed privately, not exposed on `window`). WebView doesn't report what a request is for, so `resourceTypes` is inferred from the request headers and URL, and `allowAllRequests` is applied per tab rather than per frame. `modifyHeaders` rules are ignored, WebSocket connections aren't filtered, and redirects of subresources only work for GET requests. `webRequest`, side panels, DevTools pages, native messaging and Google sign in (`identity`) are accepted but do nothing, so Manifest V2 blockers that depend on blocking `webRequest` won't block requests; use a Manifest V3 blocker. `scripting` and `tabs.executeScript` only reach the top frame.
 
 ## ZIP and RAR archives
 
@@ -144,20 +148,26 @@ Game controllers work everywhere: the D-pad and A/B/X/Y/L1/Start navigate WinDro
 
 ## Windows programs (.exe)
 
-WinDroid runs `.exe` files with **Box64** and **Wine** inside a Debian arm64 root filesystem started through **proot**:
+WinDroid runs Windows programs with **Box64** and **Wine** (WoW64, so both 32-bit and 64-bit programs) inside a Debian arm64 root filesystem started through **proot**. One session is shared by every program, so they run side by side with a single Wine server:
 
 ```
-WinDroid ── proot ── Xvfb :1 (native arm64, framebuffer in /tmp/Xvfb_screen0)
-                 └── box64 → wine64 explorer /desktop=WinDroid,WxH start /unix <app.exe>
+WinDroid ── proot ── session.sh ── Xvfb :1 (native arm64, framebuffer in /tmp/Xvfb_screen0)
+                                ├── wineserver
+                                ├── box64 → wine explorer /desktop=WinDroid,WxH start /unix <app.exe>
+                                └── box64 → wine <console.exe>
 WinDroid "Windows" window ── reads the framebuffer, sends touch and keys over the X socket (XTEST)
 ```
 
-- Opening an `.exe` shows its icon, publisher, version, architecture and installer type, with **Run** and **Install**. Installing copies it to `C:\Program Files\<App>` and adds it to **All apps** on the Start menu and, optionally, a desktop shortcut.
-- Graphical programs open in the **Windows** window: tap to click, drag to drag, long press (or the Right click button) for a right click, and the keyboard button for typing. Console programs run in a console window with input and output.
-- Settings > Apps downloads the runtime once (or installs it from a local `.tar.gz`) and lists and uninstalls installed apps.
-- The runtime is built by the **Windows Runtime** workflow (`runtime/build-runtime.sh`) and published to the `runtime-v2` release, which is where WinDroid downloads it from. proot comes from the Termux packages and is bundled in the APK by the Android Build workflow.
+- Opens `.exe`, `.msi`, `.bat` and `.cmd` files. An `.exe` shows its icon, publisher, version, architecture and installer type, with **Run** and **Install**. Installing a portable program copies its folder to `C:\Program Files\<App>` and adds it to **All apps** on the Start menu and, optionally, a desktop shortcut.
+- Programs installed by a setup (NSIS, Inno Setup, MSI and others) are added to **All apps** from the shortcuts the setup creates. Uninstalling them opens Wine's uninstaller.
+- Graphical programs open in the **Windows** window: tap to click, drag to drag, long press (or the Right click button) for a right click, and the keyboard button for typing, accented letters included. Console programs and scripts run in a console window with input and output.
+- Settings > Apps downloads the runtime once (or installs it from a local `.tar.gz`), updates an older one, opens `winecfg`, and lists and uninstalls installed apps. The Wine prefix is stored outside the runtime, so updating it keeps installed programs.
+- The first start sets Windows up and can take a few minutes.
+- The runtime is built by the **Windows Runtime** workflow (`runtime/build-runtime.sh`) on an arm64 runner. Before it can publish to the `runtime-v3` release, which is where WinDroid downloads it from, `runtime/smoke-test.sh` runs real Windows programs in it: 32-bit and 64-bit console programs, a batch file, HTTPS, graphical programs, mouse and keyboard input. The test uses `chroot` on Linux, so it doesn't cover proot on an Android kernel. proot comes from the Termux packages and is bundled in the APK by the Android Build workflow.
 - WinDroid's `C:` drive is mounted at `/mnt/c` and appears as `D:` inside Wine.
 - `targetSdk` is 28 so the runtime can execute binaries from the app's private storage, like Termux and Winlator.
+
+Limits: there is no sound and no GPU acceleration (graphics are drawn in software, so modern 3D games aren't playable), .NET and embedded Internet Explorer aren't included (Wine Mono and Gecko), ARM Windows programs don't run, and programs that need kernel drivers, such as anti-cheat or some copy protection, won't work. Emulated programs are noticeably slower than on a PC.
 
 ## Project layout
 
@@ -170,10 +180,14 @@ app/src/main/cpp
 app/src/main/java
   WinDroidActivity  NativeActivity subclass: immersive mode, cutout insets, WebView host
   Extensions        Chrome extension host: Web Store install, content scripts, messaging, background and popup pages
+  DeclarativeRules  declarativeNetRequest rule parsing, indexing and matching
+  WinRuntime        Windows runtime download, session and program management
 app/src/main/assets/wdx
   runtime.js        the chrome.* API shared by content scripts and extension pages
   content.js        per-extension document start bootstrap that matches and runs content scripts
   page.js           bootstrap for extension pages: transport, CORS-free fetch/XHR, popup sizing, service worker shim
+app/src/main/assets/runtime
+  session.sh        runs inside the Windows runtime: starts the display and Wine, launches and stops programs
 ```
 
 The browser page is a WebView hosted in a non-focusable popup window that is positioned over the window's client area while it is the active window. When another window, the Start menu or a flyout covers it, the page is captured into a texture and drawn by the GL shell instead, so windows still stack correctly.

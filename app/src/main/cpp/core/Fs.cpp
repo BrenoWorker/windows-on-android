@@ -204,6 +204,8 @@ std::string typeName(const Entry& e) {
     if (x == "lnk") return "Shortcut";
     if (x == "dll") return "Application extension";
     if (x == "msi") return "Windows Installer Package";
+    if (x == "bat") return "Windows Batch File";
+    if (x == "cmd") return "Windows Command Script";
     if (x.empty()) return "File";
     std::string u = x;
     for (auto& c : u) c = (char)toupper((unsigned char)c);

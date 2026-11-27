@@ -73,7 +73,7 @@
       add: function (id, tok, e) { if (ok(id, tok)) entries[id] = e; },
       push: push,
       pop: pop,
-      run: function (tok, id, xid, f) {
+      run: function (tok, id, xid, f, main) {
         var e = entries[id];
         if (!e || !ok(id, tok)) return '__wdx_none';
         var a = e.api();
@@ -84,15 +84,15 @@
           a.__wdx.send(o);
         };
         var r;
-        push(a);
+        if (!main) push(a);
         try {
-          r = f.call(W, a, a);
+          r = main ? f.call(W, W.chrome, W.browser) : f.call(W, a, a);
         } catch (err) {
-          pop();
+          if (!main) pop();
           reply(undefined, String(err && err.message || err));
           return '__wdx_async';
         }
-        pop();
+        if (!main) pop();
         if (r && typeof r.then === 'function') {
           r.then(function (v) { reply(v); }, function (err) { reply(undefined, String(err && err.message || err)); });
         } else {
@@ -209,7 +209,15 @@
     if (rs === 'loading') document.addEventListener('DOMContentLoaded', function () { setTimeout(f, 0); }, { once: true });
     else setTimeout(f, 0);
   };
-  var run = function (f) {
+  var run = function (f, main) {
+    if (main) {
+      try {
+        f.call(W, W.chrome, W.browser);
+      } catch (e) {
+        try { console.error(e); } catch (x) {}
+      }
+      return;
+    }
     var a = api();
     R.push(a);
     try {
@@ -233,6 +241,6 @@
     }
     if (!test(cs, target)) return;
     if (cs.css) css(cs.css);
-    if (cs.f >= 0 && FN[cs.f]) at(cs.r, function () { run(FN[cs.f]); });
+    if (cs.f >= 0 && FN[cs.f]) at(cs.r, function () { run(FN[cs.f], cs.mw); });
   });
 })(window);

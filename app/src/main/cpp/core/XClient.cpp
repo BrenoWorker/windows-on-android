@@ -38,6 +38,8 @@ void XClient::close() {
     if (fd_ >= 0) ::close(fd_);
     fd_ = -1;
     keys_.clear();
+    spare_.clear();
+    nextSpare_ = 0;
     out_.clear();
 }
 
@@ -172,6 +174,15 @@ bool XClient::loadKeymap() {
     int per = r[1];
     if (per <= 0) return false;
     keys_.clear();
+    spare_.clear();
+    for (int i = count - 1; i >= 0 && spare_.size() < 16; i--) {
+        bool used = false;
+        for (int j = 0; j < per; j++) {
+            size_t off = 32 + ((size_t)i * per + j) * 4;
+            if (off + 4 <= r.size() && le32(&r[off])) used = true;
+        }
+        if (!used) spare_.push_back(minKey_ + i);
+    }
     for (int i = 0; i < count; i++) {
         for (int j = 0; j < per && j < 2; j++) {
             size_t off = 32 + ((size_t)i * per + j) * 4;
@@ -225,12 +236,37 @@ void XClient::type(uint32_t cp) {
     else if (cp == 8) sym = 0xFF08;
     else if (cp >= 0x100) sym = 0x01000000 | cp;
     auto it = keys_.find(sym);
-    if (it == keys_.end()) return;
+    if (it == keys_.end()) {
+        if (cp < 0x20 || !bind(sym)) return;
+        it = keys_.find(sym);
+    }
     bool shifted = it->second.second && shift_;
     if (shifted) fake(2, shift_, 0, 0);
     fake(2, it->second.first, 0, 0);
     fake(3, it->second.first, 0, 0);
     if (shifted) fake(3, shift_, 0, 0);
+}
+
+int XClient::bind(uint32_t keysym) {
+    if (fd_ < 0 || spare_.empty()) return 0;
+    int code = spare_[nextSpare_++ % spare_.size()];
+    for (auto it = keys_.begin(); it != keys_.end();) {
+        if (it->second.first == code)
+            it = keys_.erase(it);
+        else
+            ++it;
+    }
+    out_.push_back(100);
+    out_.push_back(1);
+    put16(out_, 4);
+    out_.push_back((unsigned char)code);
+    out_.push_back(2);
+    put16(out_, 0);
+    put32(out_, keysym);
+    put32(out_, keysym);
+    seq_++;
+    keys_[keysym] = {code, false};
+    return code;
 }
 
 void XClient::flush() {

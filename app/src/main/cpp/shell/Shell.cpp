@@ -55,6 +55,7 @@ void Shell::init() {
     ui_.th = &theme_;
     loadConfig();
     ensureFilesystem();
+    syncWindowsApps(*this);
     volume_ = cfg_.volume;
     std::string soundDir = fs::join(plat_.dataDir, "sounds");
     std::thread([this, soundDir]() {
@@ -474,6 +475,7 @@ void Shell::loadFileIcon(const std::string& path, FileIcon& fi) {
         fi.tex = 0;
     }
     std::string exe = path;
+    if (isWineTarget(path)) return;
     if (isShortcut(path)) {
         Shortcut sc;
         if (!readShortcut(*this, path, sc)) return;
@@ -487,7 +489,7 @@ void Shell::loadFileIcon(const std::string& path, FileIcon& fi) {
 void Shell::drawFileIcon(const std::string& path, IconId fallback, const Rect& r, Color c) {
     std::string ext = fs::extension(path);
     bool lnk = ext == "lnk";
-    if (ext != "exe" && !lnk) {
+    if (isWineTarget(path) || (ext != "exe" && !lnk)) {
         drawIcon(gfx_, fallback, r, c);
         return;
     }
@@ -521,18 +523,22 @@ void Shell::openFile(const std::string& path) {
             message("Shortcut", "This shortcut is damaged and can't be opened.");
             return;
         }
+        if (isWineTarget(sc.target)) {
+            runWindowsApp(sc.target, sc.args);
+            return;
+        }
         if (!fs::exists(sc.target)) {
             message("Problem with Shortcut", "The item '" + displayPath(sc.target) + "' that this shortcut refers to has been changed or moved.");
             return;
         }
-        if (fs::extension(sc.target) == "exe")
+        if (isWindowsProgram(sc.target))
             openProgram(sc.target, true, sc.args);
         else
             openFile(sc.target);
         return;
     }
-    if (ext == "exe") {
-        openProgram(path, isInstalledPath(*this, path));
+    if (isWindowsProgram(path)) {
+        openProgram(path, ext == "exe" && isInstalledPath(*this, path));
         return;
     }
     if (isArchive(path)) {

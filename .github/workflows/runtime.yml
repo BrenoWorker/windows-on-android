@@ -3,41 +3,60 @@ name: Windows Runtime
 on:
   workflow_dispatch:
     inputs:
+      publish:
+        description: Publish the runtime to the release after the tests pass
+        type: boolean
+        default: false
       tag:
         description: Release tag that WinDroid downloads the runtime from
-        default: runtime-v2
+        default: runtime-v3
         required: true
+  pull_request:
+    paths:
+      - runtime/**
+      - app/src/main/assets/runtime/**
+      - app/src/main/cpp/core/XClient.*
+      - .github/workflows/runtime.yml
 
 permissions:
   contents: write
 
 jobs:
   runtime:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 75
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
-
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y debootstrap file gcc-aarch64-linux-gnu cmake python3
+          sudo apt-get install -y debootstrap debian-archive-keyring file cmake g++ python3 xz-utils psmisc \
+            gcc-mingw-w64-i686 gcc-mingw-w64-x86-64
 
       - name: Build runtime
         run: sudo bash runtime/build-runtime.sh "$RUNNER_TEMP/out"
 
+      - name: Test 32-bit and 64-bit Windows programs
+        run: sudo bash runtime/smoke-test.sh /tmp/windroid-rootfs "$RUNNER_TEMP/smoke"
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: runtime-test-logs
+          path: ${{ runner.temp }}/smoke
+          if-no-files-found: ignore
+
       - name: Publish release
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ inputs.tag }}
         run: |
           if ! gh release view "$TAG" >/dev/null 2>&1; then
-            gh release create "$TAG" --title "WinDroid Windows runtime" \
-              --notes "Debian arm64 root filesystem with Box64, Wine (x64) and Xvfb, used by WinDroid to run .exe files."
+            gh release create "$TAG" --title "WinDroid Windows runtime" --target "$GITHUB_SHA" \
+              --notes "Debian arm64 root filesystem with Box64, Wine WoW64 (32-bit and 64-bit Windows programs) and Xvfb, used by WinDroid to run .exe files."
           fi
           gh release upload "$TAG" "$RUNNER_TEMP/out/windroid-runtime-arm64.tar.gz" --clobber

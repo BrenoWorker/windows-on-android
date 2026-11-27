@@ -27,11 +27,16 @@ import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
 import android.widget.FrameLayout;
+import android.widget.LinearLayout;
 import android.widget.PopupWindow;
+import android.widget.ScrollView;
+import android.widget.TextView;
 import android.widget.Toast;
 
 import androidx.webkit.JavaScriptReplyProxy;
 import androidx.webkit.ScriptHandler;
+import androidx.webkit.ServiceWorkerClientCompat;
+import androidx.webkit.ServiceWorkerControllerCompat;
 import androidx.webkit.WebViewCompat;
 import androidx.webkit.WebViewFeature;
 
@@ -109,6 +114,7 @@ final class Extensions {
         String runAt = "document_idle";
         boolean allFrames;
         boolean aboutBlank;
+        boolean mainWorld;
     }
 
     private final class Alarm {
@@ -140,6 +146,13 @@ final class Extensions {
         List<String> bgScripts = new ArrayList<>();
         String bgPage;
         final List<Cs> scripts = new ArrayList<>();
+        List<Cs> registered = new ArrayList<>();
+        JSONObject saved = new JSONObject();
+        JSONArray sessionRules = new JSONArray();
+        final Map<String, List<DeclarativeRules.Rule>> rulesets = new HashMap<>();
+        volatile DeclarativeRules.Index rules;
+        volatile boolean countBadge;
+        final Map<Integer, Integer> blocked = new ConcurrentHashMap<>();
         volatile String badge = "";
         volatile String badgeColor = "#D93025";
         boolean actionEnabled = true;
@@ -229,6 +242,8 @@ final class Extensions {
     private final Map<String, Ext> exts = new ConcurrentHashMap<>();
     private final List<String> order = new CopyOnWriteArrayList<>();
     private final Map<Integer, Tab> tabs = new ConcurrentHashMap<>();
+    private final Map<String, Integer> frameAllow = new ConcurrentHashMap<>();
+    private PopupWindow menu;
     private final Map<Integer, Ctx> ctxs = new HashMap<>();
     private final Map<String, Route> routes = new HashMap<>();
     private final Map<String, PortRec> ports = new HashMap<>();
@@ -283,6 +298,24 @@ final class Extensions {
         contentTpl = asset("wdx/content.js");
         pageTpl = asset("wdx/page.js");
         io.execute(this::loadAll);
+        interceptServiceWorkers();
+    }
+
+    private void interceptServiceWorkers() {
+        try {
+            if (!WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_BASIC_USAGE)
+                    || !WebViewFeature.isFeatureSupported(WebViewFeature.SERVICE_WORKER_SHOULD_INTERCEPT_REQUEST)) {
+                return;
+            }
+            ServiceWorkerControllerCompat.getInstance().setServiceWorkerClient(new ServiceWorkerClientCompat() {
+                @Override
+                public WebResourceResponse shouldInterceptRequest(WebResourceRequest request) {
+                    return filter(-1, request);
+                }
+            });
+        } catch (Throwable ignored) {
+            return;
+        }
     }
 
     private String asset(String path) {
@@ -330,6 +363,7 @@ final class Extensions {
             for (Ext e : loaded) {
                 exts.put(e.id, e);
                 if (!order.contains(e.id)) order.add(e.id);
+                compileRules(e, null);
             }
             rebuild();
             ui.postDelayed(() -> {
@@ -386,6 +420,7 @@ final class Extensions {
                 s.runAt = c.optString("run_at", "document_idle");
                 s.allFrames = c.optBoolean("all_frames", false);
                 s.aboutBlank = c.optBoolean("match_about_blank", false) || c.optBoolean("match_origin_as_fallback", false);
+                s.mainWorld = "MAIN".equals(c.optString("world"));
                 s.js = readFiles(e, c.optJSONArray("js"), "\n;\n");
                 s.css = readFiles(e, c.optJSONArray("css"), "\n")
                         .replace("chrome-extension://__MSG_@@extension_id__/", e.base())
@@ -395,7 +430,46 @@ final class Extensions {
         }
         e.local = readJson(dataFile(id, "local"));
         e.sync = readJson(dataFile(id, "sync"));
+        e.saved = readJson(dataFile(id, "state"));
+        JSONArray kept = new JSONArray();
+        JSONArray stored = array(e.saved, "scripts");
+        for (int i = 0; i < stored.length(); i++) {
+            JSONObject s = stored.optJSONObject(i);
+            if (s != null && s.optBoolean("persistAcrossSessions", true)) kept.put(s);
+        }
+        put(e.saved, "scripts", kept);
+        e.countBadge = e.saved.optBoolean("countBadge", false);
+        e.registered = registeredScripts(e);
         return e;
+    }
+
+    private static JSONArray array(JSONObject o, String key) {
+        JSONArray a = o.optJSONArray(key);
+        return a == null ? new JSONArray() : a;
+    }
+
+    private List<Cs> registeredScripts(Ext e) {
+        List<Cs> out = new ArrayList<>();
+        JSONArray list = array(e.saved, "scripts");
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject c = list.optJSONObject(i);
+            if (c == null || c.optJSONArray("matches") == null) continue;
+            Cs s = new Cs();
+            s.matches = c.optJSONArray("matches");
+            s.excludes = array(c, "excludeMatches");
+            s.runAt = c.optString("runAt", "document_idle");
+            s.allFrames = c.optBoolean("allFrames", false);
+            s.aboutBlank = c.optBoolean("matchOriginAsFallback", false);
+            s.mainWorld = "MAIN".equals(c.optString("world"));
+            s.js = readFiles(e, c.optJSONArray("js"), "\n;\n");
+            s.css = readFiles(e, c.optJSONArray("css"), "\n");
+            out.add(s);
+        }
+        return out;
+    }
+
+    private void saveState(Ext e) {
+        writeLater(dataFile(e.id, "state"), e.saved.toString());
     }
 
     private static String stripSlash(String s) {
@@ -652,7 +726,9 @@ final class Extensions {
             cfg.put("manifest", e.manifest);
             cfg.put("lang", lang());
             JSONArray list = new JSONArray();
-            for (Cs s : e.scripts) {
+            List<Cs> every = new ArrayList<>(e.scripts);
+            every.addAll(e.registered);
+            for (Cs s : every) {
                 JSONObject j = new JSONObject();
                 j.put("m", s.matches);
                 j.put("x", s.excludes);
@@ -661,6 +737,7 @@ final class Extensions {
                 j.put("r", s.runAt);
                 j.put("af", s.allFrames);
                 j.put("ab", s.aboutBlank);
+                if (s.mainWorld) j.put("mw", true);
                 if (!s.css.isEmpty()) j.put("css", s.css);
                 if (s.js.isEmpty()) {
                     j.put("f", -1);
@@ -728,6 +805,10 @@ final class Extensions {
         for (Ctx c : new ArrayList<>(ctxs.values())) if (c.tab == id) kill(c);
         closeRequests.remove(id);
         if (activeTab == id) activeTab = -1;
+        for (Ext e : exts.values()) {
+            e.blocked.remove(id);
+            frameAllow.remove(id + ":" + e.id);
+        }
         JSONObject info = new JSONObject();
         put(info, "windowId", 1);
         put(info, "isWindowClosing", false);
@@ -805,7 +886,657 @@ final class Extensions {
     }
 
     WebResourceResponse intercept(int tabId, WebResourceRequest req) {
-        return serve(req, null, K_PAGE, tabId);
+        WebResourceResponse own = serve(req, null, K_PAGE, tabId);
+        return own != null ? own : filter(tabId, req);
+    }
+
+    private static String header(Map<String, String> headers, String name) {
+        if (headers == null) return null;
+        for (Map.Entry<String, String> en : headers.entrySet()) {
+            if (name.equalsIgnoreCase(en.getKey())) return en.getValue();
+        }
+        return null;
+    }
+
+    private WebResourceResponse filter(int tabId, WebResourceRequest req) {
+        Uri u = req.getUrl();
+        String scheme = u.getScheme();
+        if (!"http".equals(scheme) && !"https".equals(scheme)) return null;
+        String url = u.toString();
+        if (restricted(url)) return null;
+        boolean main = req.isForMainFrame();
+        Tab tab = tabs.get(tabId);
+        DeclarativeRules.Request request = null;
+        Ext winner = null;
+        DeclarativeRules.Rule rule = null;
+        for (String id : order) {
+            Ext e = exts.get(id);
+            if (e == null || !e.enabled) continue;
+            DeclarativeRules.Index index = e.rules;
+            if (index == null || index.size == 0) continue;
+            if (request == null) {
+                Map<String, String> hs = req.getRequestHeaders();
+                String from = null;
+                if (!main) {
+                    from = header(hs, "Origin");
+                    if (from == null || "null".equals(from)) from = header(hs, "Referer");
+                    if (from == null && tab != null) from = tab.url;
+                }
+                request = new DeclarativeRules.Request(url, from, DeclarativeRules.guessTypes(url, main, header(hs, "Accept")),
+                        req.getMethod(), tabId);
+            }
+            String key = tabId + ":" + id;
+            if (main && tabId >= 0) {
+                e.blocked.remove(tabId);
+                DeclarativeRules.Rule all = index.best(request, DeclarativeRules.ALLOW_ALL);
+                if (all == null) frameAllow.remove(key);
+                else frameAllow.put(key, all.priority);
+            }
+            DeclarativeRules.Rule best = index.best(request, 0);
+            if (best == null || best.action == DeclarativeRules.ALLOW || best.action == DeclarativeRules.ALLOW_ALL) continue;
+            Integer allowed = main ? null : frameAllow.get(key);
+            if (allowed != null && best.priority <= allowed) continue;
+            if (rule == null || (best.action == DeclarativeRules.BLOCK && rule.action != DeclarativeRules.BLOCK)) {
+                rule = best;
+                winner = e;
+            }
+        }
+        if (rule == null) return null;
+        if (rule.action == DeclarativeRules.BLOCK) {
+            winner.blocked.merge(tabId, 1, Integer::sum);
+            return blockedResponse(main, winner.name);
+        }
+        String target = DeclarativeRules.redirectTarget(rule, url, winner.base());
+        if (target == null || target.equals(url)) return null;
+        return redirected(winner, convertUrl(target), main, tab, req);
+    }
+
+    private static WebResourceResponse blockedResponse(boolean main, String by) {
+        String body = main ? "<!doctype html><meta name=\"viewport\" content=\"width=device-width\"><body style=\"font:15px system-ui;"
+                + "padding:48px 24px;max-width:520px;margin:auto;color:#202124\"><h2>This page was blocked</h2><p>" + esc(by)
+                + " blocked this page.</p><p style=\"color:#5f6368\">ERR_BLOCKED_BY_CLIENT</p>" : "";
+        return new WebResourceResponse(main ? "text/html" : "text/plain", "UTF-8", main ? 200 : 403, main ? "OK" : "Blocked",
+                new HashMap<String, String>(), new ByteArrayInputStream(body.getBytes(StandardCharsets.UTF_8)));
+    }
+
+    private WebResourceResponse redirected(Ext e, String target, boolean main, Tab tab, WebResourceRequest req) {
+        if (target.startsWith(e.base())) {
+            File f = resolveFile(e, Uri.parse(target).getPath());
+            if (f == null || !f.isFile()) return notFound();
+            try {
+                return new WebResourceResponse(mime(f.getName()), "UTF-8", 200, "OK", headers(), new FileInputStream(f));
+            } catch (IOException ex) {
+                return notFound();
+            }
+        }
+        if (target.startsWith("data:")) {
+            int comma = target.indexOf(',');
+            if (comma < 0) return null;
+            String meta = target.substring(5, comma);
+            String payload = target.substring(comma + 1);
+            byte[] bytes;
+            try {
+                bytes = meta.endsWith(";base64") ? Base64.decode(payload, Base64.DEFAULT)
+                        : Uri.decode(payload).getBytes(StandardCharsets.UTF_8);
+            } catch (IllegalArgumentException ex) {
+                return null;
+            }
+            int semi = meta.indexOf(';');
+            String type = semi < 0 ? meta : meta.substring(0, semi);
+            return new WebResourceResponse(type.isEmpty() ? "text/plain" : type, "UTF-8", 200, "OK", headers(),
+                    new ByteArrayInputStream(bytes));
+        }
+        if (!target.startsWith("http://") && !target.startsWith("https://")) return null;
+        if (main) {
+            if (tab == null) return null;
+            ui.post(() -> {
+                if (tabs.get(tab.id) == tab) tab.web.loadUrl(target);
+            });
+            return text("text/html", "");
+        }
+        if (!"GET".equals(req.getMethod())) return null;
+        JSONObject d = new JSONObject();
+        put(d, "url", target);
+        if (req.getRequestHeaders() != null) put(d, "headers", new JSONObject(req.getRequestHeaders()));
+        JSONObject r = httpFetch(d);
+        if (r.has("error")) return null;
+        Map<String, String> out = new HashMap<>();
+        JSONArray list = array(r, "headers");
+        String type = "application/octet-stream";
+        for (int i = 0; i < list.length(); i++) {
+            JSONArray pair = list.optJSONArray(i);
+            if (pair == null) continue;
+            out.put(pair.optString(0), pair.optString(1));
+            if ("content-type".equalsIgnoreCase(pair.optString(0))) type = pair.optString(1).split(";")[0].trim();
+        }
+        int code = r.optInt("status", 200);
+        if (code < 100 || (code >= 300 && code < 400) || code > 599) return null;
+        String reason = r.optString("statusText");
+        return new WebResourceResponse(type, "UTF-8", code, reason.isEmpty() ? "OK" : reason, out,
+                new ByteArrayInputStream(Base64.decode(r.optString("body"), Base64.DEFAULT)));
+    }
+
+    private static boolean usesRules(Ext e) {
+        JSONArray p = array(e.manifest, "permissions");
+        for (int i = 0; i < p.length(); i++) {
+            if (p.optString(i).startsWith("declarativeNetRequest")) return true;
+        }
+        return false;
+    }
+
+    private static JSONArray ruleResources(Ext e) {
+        JSONObject d = e.manifest.optJSONObject("declarative_net_request");
+        return d == null ? new JSONArray() : array(d, "rule_resources");
+    }
+
+    private static List<String> enabledRulesets(Ext e) {
+        List<String> out = new ArrayList<>();
+        JSONArray chosen = e.saved.optJSONArray("enabled");
+        if (chosen != null) {
+            for (int i = 0; i < chosen.length(); i++) out.add(chosen.optString(i));
+            return out;
+        }
+        JSONArray all = ruleResources(e);
+        for (int i = 0; i < all.length(); i++) {
+            JSONObject r = all.optJSONObject(i);
+            if (r != null && r.optBoolean("enabled", false)) out.add(r.optString("id"));
+        }
+        return out;
+    }
+
+    private static List<DeclarativeRules.Rule> parseRules(String json) {
+        List<DeclarativeRules.Rule> out = new ArrayList<>();
+        JSONArray a;
+        try {
+            Object v = new JSONTokener(json).nextValue();
+            if (!(v instanceof JSONArray)) return out;
+            a = (JSONArray) v;
+        } catch (JSONException ex) {
+            return out;
+        }
+        for (int i = 0; i < a.length(); i++) {
+            try {
+                DeclarativeRules.Rule r = DeclarativeRules.parse(a.optJSONObject(i));
+                if (r != null) out.add(r);
+            } catch (IllegalArgumentException ignored) {
+                continue;
+            }
+        }
+        return out;
+    }
+
+    private void compileRules(final Ext e, final Runnable done) {
+        if (!usesRules(e)) {
+            if (done != null) done.run();
+            return;
+        }
+        final List<String> enabled = enabledRulesets(e);
+        final String dynamic = array(e.saved, "dynamic").toString();
+        final String session = e.sessionRules.toString();
+        final JSONArray resources = ruleResources(e);
+        io.execute(() -> {
+            DeclarativeRules.Index index = new DeclarativeRules.Index();
+            for (int i = 0; i < resources.length(); i++) {
+                JSONObject res = resources.optJSONObject(i);
+                if (res == null || !enabled.contains(res.optString("id"))) continue;
+                List<DeclarativeRules.Rule> list = e.rulesets.get(res.optString("id"));
+                if (list == null) {
+                    File f = resolveFile(e, res.optString("path"));
+                    try {
+                        list = f == null || !f.isFile() ? new ArrayList<>() : parseRules(readText(f));
+                    } catch (IOException | OutOfMemoryError ex) {
+                        list = new ArrayList<>();
+                    }
+                    e.rulesets.put(res.optString("id"), list);
+                }
+                for (DeclarativeRules.Rule r : list) index.add(r);
+            }
+            for (DeclarativeRules.Rule r : parseRules(dynamic)) index.add(r);
+            for (DeclarativeRules.Rule r : parseRules(session)) index.add(r);
+            e.rules = index;
+            if (done != null) ui.post(done);
+        });
+    }
+
+    private static Set<String> idSet(JSONArray a) {
+        Set<String> out = new HashSet<>();
+        if (a != null) for (int i = 0; i < a.length(); i++) out.add(String.valueOf(a.opt(i)));
+        return out;
+    }
+
+    private static JSONArray without(JSONArray list, Set<String> ids) {
+        JSONArray out = new JSONArray();
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject o = list.optJSONObject(i);
+            if (o != null && !ids.contains(String.valueOf(o.opt("id")))) out.put(o);
+        }
+        return out;
+    }
+
+    private static JSONArray only(JSONArray list, JSONArray ids) {
+        if (ids == null) return list;
+        Set<String> want = idSet(ids);
+        JSONArray out = new JSONArray();
+        for (int i = 0; i < list.length(); i++) {
+            JSONObject o = list.optJSONObject(i);
+            if (o != null && want.contains(String.valueOf(o.opt("id")))) out.put(o);
+        }
+        return out;
+    }
+
+    private void onRules(final Ctx c, String x, JSONObject d, final int id) {
+        final Ext e = c.ext;
+        if (!usesRules(e)) {
+            cb(c, id, null, "The declarativeNetRequest permission is required.");
+            return;
+        }
+        boolean session = x.endsWith("SessionRules");
+        JSONArray current = session ? e.sessionRules : array(e.saved, "dynamic");
+        switch (x) {
+            case "getDynamicRules":
+            case "getSessionRules":
+                cb(c, id, only(current, d.optJSONArray("ruleIds")), null);
+                return;
+            case "getEnabledRulesets":
+                cb(c, id, new JSONArray(enabledRulesets(e)), null);
+                return;
+            case "setExtensionActionOptions":
+                if (d.has("displayActionCountAsBadgeText")) {
+                    e.countBadge = d.optBoolean("displayActionCountAsBadgeText");
+                    put(e.saved, "countBadge", e.countBadge);
+                    saveState(e);
+                }
+                cb(c, id, null, null);
+                return;
+            case "updateDynamicRules":
+            case "updateSessionRules": {
+                JSONArray next = without(current, idSet(d.optJSONArray("removeRuleIds")));
+                Set<String> used = new HashSet<>();
+                for (int i = 0; i < next.length(); i++) used.add(String.valueOf(next.optJSONObject(i).opt("id")));
+                JSONArray add = array(d, "addRules");
+                for (int i = 0; i < add.length(); i++) {
+                    JSONObject o = add.optJSONObject(i);
+                    try {
+                        DeclarativeRules.parse(o);
+                    } catch (IllegalArgumentException ex) {
+                        cb(c, id, null, ex.getMessage());
+                        return;
+                    }
+                    if (!used.add(String.valueOf(o.opt("id")))) {
+                        cb(c, id, null, "Rule with id " + o.opt("id") + " does not have a unique ID.");
+                        return;
+                    }
+                    next.put(o);
+                }
+                if (session) {
+                    e.sessionRules = next;
+                } else {
+                    put(e.saved, "dynamic", next);
+                    saveState(e);
+                }
+                break;
+            }
+            case "updateEnabledRulesets": {
+                Set<String> known = new HashSet<>();
+                JSONArray res = ruleResources(e);
+                for (int i = 0; i < res.length(); i++) {
+                    if (res.optJSONObject(i) != null) known.add(res.optJSONObject(i).optString("id"));
+                }
+                Set<String> on = new LinkedHashSet<>(enabledRulesets(e));
+                on.removeAll(idSet(d.optJSONArray("disableRulesetIds")));
+                for (String s : idSet(d.optJSONArray("enableRulesetIds"))) {
+                    if (!known.contains(s)) {
+                        cb(c, id, null, "Invalid ruleset id: " + s + ".");
+                        return;
+                    }
+                    on.add(s);
+                }
+                put(e.saved, "enabled", new JSONArray(on));
+                saveState(e);
+                break;
+            }
+            default:
+                cb(c, id, null, "Unsupported declarativeNetRequest operation");
+                return;
+        }
+        compileRules(e, () -> cb(c, id, null, null));
+    }
+
+    private void onContentScripts(Ctx c, String x, JSONObject d, int id) {
+        Ext e = c.ext;
+        JSONArray current = array(e.saved, "scripts");
+        JSONArray given = array(d, "scripts");
+        JSONObject query = d.optJSONObject("filter");
+        JSONArray ids = query == null ? null : query.optJSONArray("ids");
+        Map<String, JSONObject> byId = new HashMap<>();
+        for (int i = 0; i < current.length(); i++) byId.put(current.optJSONObject(i).optString("id"), current.optJSONObject(i));
+        switch (x) {
+            case "get":
+                cb(c, id, only(current, ids), null);
+                return;
+            case "register":
+            case "update": {
+                boolean update = "update".equals(x);
+                Set<String> seen = new HashSet<>();
+                for (int i = 0; i < given.length(); i++) {
+                    JSONObject s = given.optJSONObject(i);
+                    String sid = s == null ? "" : s.optString("id");
+                    if (sid.isEmpty() || sid.startsWith("_") || !seen.add(sid)) {
+                        cb(c, id, null, "Content script has an invalid or repeated id.");
+                        return;
+                    }
+                    if (byId.containsKey(sid) != update) {
+                        cb(c, id, null, update ? "Nonexistent script ID '" + sid + "'" : "Duplicate script ID '" + sid + "'");
+                        return;
+                    }
+                    if (!update && s.optJSONArray("matches") == null) {
+                        cb(c, id, null, "Script with ID '" + sid + "' must specify 'matches'.");
+                        return;
+                    }
+                }
+                for (int i = 0; i < given.length(); i++) {
+                    JSONObject s = given.optJSONObject(i);
+                    if (update) {
+                        JSONObject old = byId.get(s.optString("id"));
+                        Iterator<String> it = s.keys();
+                        while (it.hasNext()) {
+                            String k = it.next();
+                            put(old, k, s.opt(k));
+                        }
+                    } else {
+                        current.put(s);
+                    }
+                }
+                put(e.saved, "scripts", current);
+                break;
+            }
+            case "unregister":
+                put(e.saved, "scripts", ids == null ? new JSONArray() : without(current, idSet(ids)));
+                break;
+            default:
+                cb(c, id, null, "Unsupported scripting operation");
+                return;
+        }
+        saveState(e);
+        e.registered = registeredScripts(e);
+        rebuild();
+        cb(c, id, null, null);
+    }
+
+    private void onMenus(Ctx c, String x, JSONObject d, int id) {
+        Ext e = c.ext;
+        JSONArray current = array(e.saved, "menus");
+        String key = String.valueOf(d.opt("id"));
+        switch (x) {
+            case "create": {
+                JSONArray next = without(current, Collections.singleton(key));
+                next.put(d);
+                put(e.saved, "menus", next);
+                break;
+            }
+            case "update": {
+                JSONObject props = d.optJSONObject("props");
+                for (int i = 0; i < current.length(); i++) {
+                    JSONObject o = current.optJSONObject(i);
+                    if (props == null || !key.equals(String.valueOf(o.opt("id")))) continue;
+                    Iterator<String> it = props.keys();
+                    while (it.hasNext()) {
+                        String k = it.next();
+                        if (!"id".equals(k)) put(o, k, props.opt(k));
+                    }
+                }
+                break;
+            }
+            case "remove": {
+                Set<String> gone = new HashSet<>(Collections.singleton(key));
+                boolean grew = true;
+                while (grew) {
+                    grew = false;
+                    for (int i = 0; i < current.length(); i++) {
+                        JSONObject o = current.optJSONObject(i);
+                        if (gone.contains(String.valueOf(o.opt("parentId"))) && gone.add(String.valueOf(o.opt("id")))) grew = true;
+                    }
+                }
+                put(e.saved, "menus", without(current, gone));
+                break;
+            }
+            case "removeAll":
+                put(e.saved, "menus", new JSONArray());
+                break;
+            default:
+                break;
+        }
+        saveState(e);
+        cb(c, id, null, null);
+    }
+
+    private static final class MenuTarget {
+        String page = "";
+        String link;
+        String src;
+        String selection;
+    }
+
+    private static final class MenuEntry {
+        Ext ext;
+        JSONObject item;
+        String label;
+    }
+
+    private static boolean urlListed(JSONArray patterns, String url) {
+        if (patterns == null || patterns.length() == 0) return true;
+        if (url == null) return false;
+        for (int i = 0; i < patterns.length(); i++) {
+            Pattern p = matchPattern(patterns.optString(i));
+            if (p != null && p.matcher(url.split("#", 2)[0]).matches()) return true;
+        }
+        return false;
+    }
+
+    private static boolean menuApplies(JSONObject item, MenuTarget t) {
+        if (!item.optBoolean("visible", true) || "separator".equals(item.optString("type"))) return false;
+        Set<String> want = idSet(item.optJSONArray("contexts"));
+        if (want.isEmpty()) want.add("page");
+        Set<String> have = new HashSet<>();
+        if (t.link != null) have.add("link");
+        if (t.src != null) have.add("image");
+        if (t.selection != null) have.add("selection");
+        if (have.isEmpty()) have.add("page");
+        have.retainAll(want);
+        if (have.isEmpty() && !want.contains("all")) return false;
+        if (!urlListed(item.optJSONArray("documentUrlPatterns"), t.page)) return false;
+        JSONArray targets = item.optJSONArray("targetUrlPatterns");
+        if (targets == null || targets.length() == 0) return true;
+        if (t.link != null && urlListed(targets, t.link)) return true;
+        return t.src != null && urlListed(targets, t.src);
+    }
+
+    private List<MenuEntry> menuEntries(MenuTarget t) {
+        List<MenuEntry> out = new ArrayList<>();
+        for (String id : order) {
+            Ext e = exts.get(id);
+            if (e == null || !e.enabled) continue;
+            JSONArray items = array(e.saved, "menus");
+            Map<String, JSONObject> byId = new HashMap<>();
+            Set<String> parents = new HashSet<>();
+            for (int i = 0; i < items.length(); i++) {
+                JSONObject o = items.optJSONObject(i);
+                byId.put(String.valueOf(o.opt("id")), o);
+                if (o.has("parentId")) parents.add(String.valueOf(o.opt("parentId")));
+            }
+            for (int i = 0; i < items.length(); i++) {
+                JSONObject o = items.optJSONObject(i);
+                if (parents.contains(String.valueOf(o.opt("id"))) || !menuApplies(o, t)) continue;
+                String label = msg(e, o.optString("title"));
+                JSONObject p = o;
+                for (int depth = 0; depth < 4 && p.has("parentId"); depth++) {
+                    p = byId.get(String.valueOf(p.opt("parentId")));
+                    if (p == null) break;
+                    label = msg(e, p.optString("title")) + " › " + label;
+                }
+                if (t.selection != null) {
+                    label = label.replace("%s", t.selection.length() > 30 ? t.selection.substring(0, 30) + "…" : t.selection);
+                }
+                MenuEntry entry = new MenuEntry();
+                entry.ext = e;
+                entry.item = o;
+                entry.label = label.replaceAll("&(?!&)", "");
+                out.add(entry);
+            }
+        }
+        return out;
+    }
+
+    private boolean hasMenus() {
+        for (Ext e : exts.values()) if (e.enabled && array(e.saved, "menus").length() > 0) return true;
+        return false;
+    }
+
+    boolean longPress(final int tabId, final WebView web, final int x, final int y) {
+        final Tab tab = tabs.get(tabId);
+        if (tab == null || !hasMenus() || restricted(tab.url)) return false;
+        WebView.HitTestResult hit = web.getHitTestResult();
+        int type = hit == null ? WebView.HitTestResult.UNKNOWN_TYPE : hit.getType();
+        String extra = hit == null ? null : hit.getExtra();
+        final MenuTarget t = new MenuTarget();
+        t.page = tab.url;
+        if (type == WebView.HitTestResult.EDIT_TEXT_TYPE) return false;
+        if (type == WebView.HitTestResult.SRC_ANCHOR_TYPE) {
+            t.link = extra;
+            return showMenu(tab, t, x, y);
+        }
+        if (type == WebView.HitTestResult.IMAGE_TYPE) {
+            t.src = extra;
+            return showMenu(tab, t, x, y);
+        }
+        if (type == WebView.HitTestResult.SRC_IMAGE_ANCHOR_TYPE) {
+            t.src = extra;
+            t.link = extra;
+            if (menuEntries(t).isEmpty()) return false;
+            Handler handler = new Handler(Looper.getMainLooper(), message -> {
+                t.link = message.getData().getString("url");
+                showMenu(tab, t, x, y);
+                return true;
+            });
+            web.requestFocusNodeHref(handler.obtainMessage());
+            return true;
+        }
+        ui.postDelayed(() -> {
+            if (tabs.get(tabId) != tab) return;
+            web.evaluateJavascript("String(window.getSelection()||'')", v -> {
+                Object s = parseValue(v);
+                if (s instanceof String && !((String) s).trim().isEmpty()) t.selection = ((String) s).trim();
+                showMenu(tab, t, x, y);
+            });
+        }, 350);
+        return false;
+    }
+
+    private boolean showMenu(final Tab tab, final MenuTarget t, int x, int y) {
+        List<MenuEntry> entries = menuEntries(t);
+        View anchor = act.getWindow().getDecorView();
+        if (entries.isEmpty() || anchor.getWindowToken() == null) return false;
+        if (menu != null && menu.isShowing()) menu.dismiss();
+        LinearLayout column = new LinearLayout(act);
+        column.setOrientation(LinearLayout.VERTICAL);
+        column.setPadding(0, dp(4), 0, dp(4));
+        final PopupWindow p = new PopupWindow(act);
+        Ext last = null;
+        int rows = 0;
+        for (final MenuEntry entry : entries) {
+            if (entry.ext != last) {
+                last = entry.ext;
+                TextView head = new TextView(act);
+                head.setText(last.name);
+                head.setTextSize(11);
+                head.setTextColor(0xFF707070);
+                head.setSingleLine(true);
+                head.setEllipsize(TextUtils.TruncateAt.END);
+                head.setPadding(dp(14), dp(6), dp(14), dp(2));
+                column.addView(head);
+                rows++;
+            }
+            TextView row = new TextView(act);
+            boolean enabled = entry.item.optBoolean("enabled", true);
+            row.setText(entry.item.optBoolean("checked", false) ? "✓  " + entry.label : entry.label);
+            row.setTextSize(14);
+            row.setTextColor(enabled ? 0xFF1A1A1A : 0xFFA0A0A0);
+            row.setSingleLine(true);
+            row.setEllipsize(TextUtils.TruncateAt.END);
+            row.setPadding(dp(14), dp(10), dp(14), dp(10));
+            if (enabled) {
+                row.setOnClickListener(v -> {
+                    p.dismiss();
+                    menuClicked(tab, t, entry);
+                });
+            }
+            column.addView(row);
+            rows++;
+        }
+        ScrollView scroll = new ScrollView(act);
+        scroll.addView(column);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setColor(0xFFF9F9F9);
+        bg.setCornerRadius(dp(8));
+        bg.setStroke(Math.max(1, dp(0.5)), 0x33000000);
+        int width = Math.min(dp(280), anchor.getWidth() - 8);
+        int height = Math.min(dp(rows * 40 + 8), anchor.getHeight() - 8);
+        p.setContentView(scroll);
+        p.setBackgroundDrawable(bg);
+        p.setWidth(width);
+        p.setHeight(height);
+        p.setFocusable(true);
+        p.setOutsideTouchable(true);
+        p.setElevation(dp(12));
+        menu = p;
+        p.showAtLocation(anchor, Gravity.TOP | Gravity.START, Math.max(4, Math.min(x, anchor.getWidth() - width - 4)),
+                Math.max(4, Math.min(y, anchor.getHeight() - height - 4)));
+        return true;
+    }
+
+    private void menuClicked(Tab tab, MenuTarget t, MenuEntry entry) {
+        Ext e = entry.ext;
+        JSONObject item = entry.item;
+        if (exts.get(e.id) != e || !e.enabled) return;
+        JSONObject info = new JSONObject();
+        put(info, "menuItemId", item.opt("id"));
+        if (item.has("parentId")) put(info, "parentMenuItemId", item.opt("parentId"));
+        put(info, "pageUrl", t.page);
+        put(info, "frameId", 0);
+        put(info, "editable", false);
+        if (t.link != null) put(info, "linkUrl", t.link);
+        if (t.src != null) {
+            put(info, "srcUrl", t.src);
+            put(info, "mediaType", "image");
+        }
+        if (t.selection != null) put(info, "selectionText", t.selection);
+        String type = item.optString("type");
+        if ("checkbox".equals(type) || "radio".equals(type)) {
+            boolean was = item.optBoolean("checked", false);
+            boolean now = "radio".equals(type) || !was;
+            if ("radio".equals(type)) {
+                JSONArray items = array(e.saved, "menus");
+                for (int i = 0; i < items.length(); i++) {
+                    JSONObject o = items.optJSONObject(i);
+                    if ("radio".equals(o.optString("type"))
+                            && String.valueOf(o.opt("parentId")).equals(String.valueOf(item.opt("parentId")))) {
+                        put(o, "checked", false);
+                    }
+                }
+            }
+            put(item, "checked", now);
+            put(info, "wasChecked", was);
+            put(info, "checked", now);
+            saveState(e);
+        }
+        deliverToBackground(e, "contextMenus.onClicked", new JSONArray().put(info).put(tabJson(tab)));
+    }
+
+    private void deliverToBackground(Ext e, String name, JSONArray args) {
+        if (e.bg == null) startBackground(e);
+        Ctx c = background(e);
+        if (c == null || !c.ready) e.startEvents.add(new Object[]{name, args});
+        else event(e, name, args, true);
     }
 
     static String convertUrl(String url) {
@@ -1250,6 +1981,15 @@ final class Extensions {
                 break;
             case "off":
                 if (page) onOffscreen(c, o.optString("x"), d, id);
+                break;
+            case "dnr":
+                if (page) onRules(c, o.optString("x"), d, id);
+                break;
+            case "cs":
+                if (page) onContentScripts(c, o.optString("x"), d, id);
+                break;
+            case "menu":
+                if (page) onMenus(c, o.optString("x"), d, id);
                 break;
             case "close":
                 if (c.kind == K_POPUP) dismissPopup();
@@ -1718,13 +2458,15 @@ final class Extensions {
         } else {
             body = readFiles(e, d.optJSONArray("files"), "\n;\n");
         }
+        final boolean mainWorld = "MAIN".equals(d.optString("world"));
         final String xid = "x" + (++execSeq);
         Exec ex = new Exec();
         ex.ctx = c;
         ex.cb = id;
         execs.put(xid, ex);
         String js = ensure + "(function(){var f=function(chrome,browser){\n" + body + "\n};return window.__wdxReg?window.__wdxReg.run("
-                + JSONObject.quote(e.token) + "," + JSONObject.quote(e.id) + "," + JSONObject.quote(xid) + ",f):'__wdx_none';})()";
+                + JSONObject.quote(e.token) + "," + JSONObject.quote(e.id) + "," + JSONObject.quote(xid) + ",f,"
+                + mainWorld + "):'__wdx_none';})()";
         t.web.evaluateJavascript(js, v -> {
             if ("\"__wdx_async\"".equals(v)) return;
             if (execs.remove(xid) != null) cb(c, id, null, "Cannot access contents of the page.");
@@ -2490,10 +3232,8 @@ final class Extensions {
     private void click(Ext e, int tab) {
         if (tab > 0) activated(tab);
         Tab t = tabs.get(activeTab);
-        if (e.bg == null) startBackground(e);
         Object arg = t == null ? JSONObject.NULL : tabJson(t);
-        if (background(e) == null || !background(e).ready) e.startEvents.add(new Object[]{"action.onClicked", new JSONArray().put(arg)});
-        else event(e, "action.onClicked", new JSONArray().put(arg), true);
+        deliverToBackground(e, "action.onClicked", new JSONArray().put(arg));
     }
 
     private void setEnabled(String id, boolean on) {
@@ -2520,6 +3260,7 @@ final class Extensions {
             deleteTree(dir);
             deleteTree(dataFile(id, "local"));
             deleteTree(dataFile(id, "sync"));
+            deleteTree(dataFile(id, "state"));
         });
         rebuild();
         for (Tab t : tabs.values()) cws(t);
@@ -2637,8 +3378,7 @@ final class Extensions {
         if (perms.contains("declarativeNetRequest") || perms.contains("declarativeNetRequestWithHostAccess") || perms.contains("webRequestBlocking")) {
             out.add("Block content on any page");
         }
-        boolean partial = perms.contains("declarativeNetRequest") || perms.contains("declarativeNetRequestWithHostAccess")
-                || perms.contains("webRequest") || perms.contains("nativeMessaging") || perms.contains("sidePanel")
+        boolean partial = perms.contains("webRequest") || perms.contains("nativeMessaging") || perms.contains("sidePanel")
                 || perms.contains("identity") || perms.contains("debugger") || perms.contains("proxy")
                 || e.manifest.has("devtools_page") || e.manifest.has("chrome_url_overrides") || e.manifest.has("side_panel");
         if (partial) out.add("!Some features of this extension may not work in WinDroid");
@@ -2753,8 +3493,13 @@ final class Extensions {
             return;
         }
         e.enabled = true;
+        if (previous != null) {
+            e.saved.remove("enabled");
+            saveState(e);
+        }
         prefs.edit().putBoolean("enabled." + s.id, true).apply();
         exts.put(e.id, e);
+        compileRules(e, null);
         if (!order.contains(e.id)) order.add(e.id);
         saveOrder();
         JSONObject details = new JSONObject();
@@ -2785,9 +3530,14 @@ final class Extensions {
         for (String id : order) {
             Ext e = exts.get(id);
             if (e == null) continue;
+            String badge = e.badge;
+            if (badge.isEmpty() && e.countBadge) {
+                Integer n = e.blocked.get(activeTab);
+                if (n != null) badge = n > 999 ? "999+" : String.valueOf(n);
+            }
             sb.append(e.id).append('\t').append(clean(e.name)).append('\t').append(clean(e.version)).append('\t')
                     .append(e.enabled ? 1 : 0).append('\t').append(e.popup.isEmpty() ? 0 : 1).append('\t')
-                    .append(e.options.isEmpty() ? 0 : 1).append('\t').append(clean(e.badge)).append('\t')
+                    .append(e.options.isEmpty() ? 0 : 1).append('\t').append(clean(badge)).append('\t')
                     .append(e.badgeColor).append('\t').append(e.iconStamp).append('\t')
                     .append(clean(e.title.isEmpty() ? e.description : e.title)).append('\n');
         }
@@ -2893,6 +3643,7 @@ final class Extensions {
 
     void destroy() {
         dismissPopup();
+        if (menu != null && menu.isShowing()) menu.dismiss();
         for (Ext e : exts.values()) {
             stopBackground(e);
             if (e.off != null) destroyView(e.off);

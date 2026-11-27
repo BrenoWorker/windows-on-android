@@ -29,6 +29,8 @@ private:
     uint16_t seq_ = 0;
     std::map<uint32_t, std::pair<int, bool>> keys_;
     int shift_ = 0;
+    std::vector<int> spare_;
+    size_t nextSpare_ = 0;
     std::vector<unsigned char> out_;
 
     bool writeAll(const unsigned char* p, size_t n);
@@ -36,6 +38,7 @@ private:
     bool readReply(std::vector<unsigned char>& reply, int timeoutMs);
     void fake(int type, int detail, int x, int y);
     bool loadKeymap();
+    int bind(uint32_t keysym);
 };
 
 struct XFrame {

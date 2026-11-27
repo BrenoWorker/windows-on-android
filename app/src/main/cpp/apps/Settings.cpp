@@ -242,6 +242,7 @@ private:
     std::string toast_;
     double toastT_ = -10;
     double rtPoll_ = -10;
+    double appsSync_ = -10;
     std::vector<std::string> rt_;
     int rtSeq_ = -1;
 
@@ -431,7 +432,7 @@ private:
         if (shell->now() - rtPoll_ < 0.4) return;
         rtPoll_ = shell->now();
         rt_ = split(shell->sys("rt.status"), '\t');
-        while (rt_.size() < 8) rt_.push_back("");
+        while (rt_.size() < 12) rt_.push_back("");
         int seq = atoi(rt_[7].c_str());
         if (seq != rtSeq_) {
             if (rtSeq_ >= 0 && !rt_[5].empty()) showToast(rt_[5]);
@@ -470,7 +471,7 @@ private:
                 if (ui.button({x + w - 116, y + 28, 100, 32}, "Cancel")) sh->sys("rt.cancel");
                 y += 92;
             } else if (!inst) {
-                std::string sub = state == "failed" && !rt_[5].empty() ? "Last attempt failed: " + rt_[5] : "Download Box64 + Wine once (about 300 MB) to open .exe files";
+                std::string sub = state == "failed" && !rt_[5].empty() ? "Last attempt failed: " + rt_[5] : "Download Box64 + Wine once (a few hundred MB) to open .exe files";
                 y = row(ui, x, y, w, IcDialog, "Run Windows programs", sub, 72);
                 if (ui.button({x + w - 116, ty + 20, 100, 32}, "Download", true)) sh->sys("rt.install", "");
                 ty = y;
@@ -486,14 +487,26 @@ private:
                 y = row(ui, x, y, w, IcDialog, "Windows compatibility runtime", ver, 72);
                 g.circle(x + 40, ty + 50, 4, rgb(0x6CCB5F));
                 if (ui.button({x + w - 116, ty + 20, 100, 32}, "Remove")) sh->sys("rt.remove");
+                if (rt_[11] != "1") {
+                    ty = y;
+                    y = row(ui, x, y, w, IcGlyphDown, "Update the runtime", "Adds 32-bit programs and setups. Installed Windows apps are kept");
+                    if (ui.button({x + w - 116, ty + 16, 100, 32}, "Update", true)) sh->sys("rt.install", "");
+                }
                 ty = y;
-                y = row(ui, x, y, w, IcGlyphRestart, "Reset Windows settings", "Deletes the Wine prefix (registry and C:\\windows) and starts fresh");
+                y = row(ui, x, y, w, IcGlyphGrid, "Windows configuration", "Windows version, libraries and graphics options (winecfg)");
+                if (ui.button({x + w - 116, ty + 16, 100, 32}, "Open")) sh->runWindowsApp("winecfg");
+                ty = y;
+                y = row(ui, x, y, w, IcGlyphRestart, "Reset Windows settings", "Deletes the Wine prefix, including apps installed by Windows setups");
                 if (ui.button({x + w - 116, ty + 16, 100, 32}, "Reset")) sh->sys("rt.reset");
             }
         }
         y += 14;
         g.textBold(x, y, 13, "Installed apps", th.text);
         y += 26;
+        if (shell->now() - appsSync_ > 3) {
+            appsSync_ = shell->now();
+            syncWindowsApps(*shell);
+        }
         auto progs = installedPrograms(*shell);
         if (progs.empty()) y = row(ui, x, y, w, IcGlyphGrid, "No Windows apps installed", "Open an .exe file and choose Install");
         for (auto& p : progs) {
@@ -501,12 +514,13 @@ private:
             card(g, th, {x, y, w, 64});
             shell->drawFileIcon(p.target, IcDialog, {x + 16, y + 18, 28, 28}, th.text);
             g.text(x + 58, y + 14, 13, g.ellipsize(13, p.name, w - 260), th.text);
-            g.text(x + 58, y + 34, 11.5f, g.ellipsize(11.5f, shell->displayPath(p.target), w - 260), th.textDim);
+            std::string where = isWineTarget(p.target) ? "Installed by a Windows setup program" : shell->displayPath(p.target);
+            g.text(x + 58, y + 34, 11.5f, g.ellipsize(11.5f, where, w - 260), th.textDim);
             y += 68;
             Shortcut sc = p;
             if (ui.button({x + w - 116, ty + 16, 100, 32}, "Uninstall")) {
                 uninstallProgram(*sh, sc);
-                showToast(sc.name + " was uninstalled");
+                if (!isWineTarget(sc.target)) showToast(sc.name + " was uninstalled");
             }
             if (ui.button({x + w - 222, ty + 16, 100, 32}, "Open", true)) sh->openFile(sc.path);
         }
